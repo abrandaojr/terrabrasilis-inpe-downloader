@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: TerraBrasilis/INPE Public Data Downloader
+message: If you use this repository, please cite it and cite TerraBrasilis/INPE according to the official data provider requirements.
+type: software
+authors:
+  - family-names: Brandao Jr
+    given-names: Amintas
+license: MIT
+repository-code: https://github.com/abrandaojr/terrabrasilis-inpe-downloader
+version: 0.1.0
+date-released: 2026-05-14

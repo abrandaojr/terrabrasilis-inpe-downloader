@@ -1,0 +1,24 @@
+# Local data downloaded by the script
+data/raw/**
+data/metadata/**
+!data/raw/.gitkeep
+!data/metadata/.gitkeep
+
+# Downloaded or generated files
+*.zip
+*.tmp
+*.csv
+*.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Local configuration and system files
+.env
+.DS_Store
+Thumbs.db

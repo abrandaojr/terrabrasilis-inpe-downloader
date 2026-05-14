@@ -1,14 +1,14 @@
 # TerraBrasilis/INPE Public Data Downloader
 
-Repositório para listar, baixar, retomar downloads interrompidos e validar arquivos ZIP públicos disponíveis na página oficial do TerraBrasilis/INPE.
+This repository provides a simple tool to list, download, resume interrupted downloads, and validate public ZIP files available from the official TerraBrasilis/INPE download page.
 
-Fonte dos dados:
+Data source:
 
 https://terrabrasilis.dpi.inpe.br/en/download-files/
 
-Este repositório fornece apenas o código. Ele não redistribui bases do TerraBrasilis/INPE. Os arquivos são baixados diretamente da fonte oficial e armazenados localmente na máquina do usuário.
+This repository provides code only. It does not redistribute TerraBrasilis/INPE datasets. All files are downloaded directly from the official source and stored locally on the user's computer.
 
-## Estrutura
+## Repository structure
 
 ```text
 terrabrasilis-inpe-downloader/
@@ -24,9 +24,9 @@ terrabrasilis-inpe-downloader/
     └── metadata/
 ```
 
-## Instalação
+## Installation
 
-Crie um ambiente virtual e instale as dependências:
+Create a virtual environment and install the required packages:
 
 ```bash
 python -m venv .venv
@@ -34,7 +34,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-No Linux ou macOS:
+On Linux or macOS:
 
 ```bash
 python -m venv .venv
@@ -42,43 +42,43 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Uso básico
+## Basic use
 
-Rodar com confirmação manual antes do download:
+Run the script with manual confirmation before downloading files:
 
 ```bash
 python scripts/download_terrabrasilis.py
 ```
 
-Rodar sem confirmação interativa:
+Run the script without interactive confirmation:
 
 ```bash
 python scripts/download_terrabrasilis.py --yes
 ```
 
-Definir uma pasta local de saída:
+Set a local output folder:
 
 ```bash
 python scripts/download_terrabrasilis.py --root data/raw/terrabrasilis --yes
 ```
 
-Forçar renderização dinâmica com Selenium, caso a página deixe de expor os links no HTML estático:
+Force dynamic page rendering with Selenium, in case the download links are no longer available in the static HTML:
 
 ```bash
 python scripts/download_terrabrasilis.py --dynamic --yes
 ```
 
-## Saídas locais
+## Local outputs
 
-Por padrão, os dados são salvos em:
+By default, downloaded files are saved to:
 
 ```text
 data/raw/terrabrasilis/<YYYY-MM-DD>/
 ```
 
-Dentro dessa pasta, o script organiza os arquivos por bioma e categoria quando essa informação pode ser inferida da URL.
+Inside this folder, the script organizes files by biome and category when this information can be inferred from the file URL.
 
-O script também salva metadados da raspagem:
+The script also saves metadata and validation files:
 
 ```text
 terrabrasilis_zips.csv
@@ -86,18 +86,18 @@ terrabrasilis_zips.json
 validation_report.json
 ```
 
-Esses arquivos locais não devem ser enviados ao GitHub.
+These local files should not be committed to GitHub.
 
-## Aviso sobre uso dos dados
+## Data use notice
 
-Este repositório não redistribui bases do TerraBrasilis/INPE. Os scripts apenas automatizam o download direto da fonte oficial.
+This repository does not redistribute TerraBrasilis/INPE datasets. The scripts only automate downloads directly from the official source.
 
-Usuários são responsáveis por verificar os termos de uso, requisitos de citação e condições de uso definidos pelo INPE/TerraBrasilis antes de publicar, compartilhar ou interpretar produtos derivados.
+Users are responsible for checking and following the current terms of use, citation requirements, and data-use conditions defined by INPE/TerraBrasilis before publishing, sharing, or interpreting any derived products.
 
-Os resultados derivados desses dados devem ser validados antes de uso em relatórios, publicações, painéis, análises técnicas ou processos de decisão.
+Outputs derived from these data should be validated before use in reports, publications, dashboards, technical analyses, or decision-making processes.
 
-## Licença
+## License
 
-O código deste repositório é disponibilizado sob a licença MIT.
+The code in this repository is released under the MIT License.
 
-Essa licença se aplica apenas ao código desenvolvido neste repositório. Ela não se aplica às bases de dados do TerraBrasilis/INPE ou a qualquer outro dado baixado por meio dos scripts.
+This license applies only to the code developed in this repository. It does not apply to TerraBrasilis/INPE datasets or to any other data downloaded by the scripts.

@@ -21,7 +21,7 @@ TerraBrasilis website
         │  Rasters (TIF/TIFF) → COG GeoTIFF (ESRI:102033, optimized for zonal stats)
         │
         ▼  (analysis-ready files)
-04_deforestation_chart.py    ← generate annual deforestation rate chart
+03_deforestation_chart.py    ← generate annual deforestation rate chart
 ```
 
 ---
@@ -89,7 +89,7 @@ python 02_convert_to_geoparquet.py --list    # list existing outputs with CRS in
 
 ---
 
-### `04_deforestation_chart.py`
+### `03_deforestation_chart.py`
 
 Generates a publication-ready bar chart of annual Amazon deforestation rates (INPE/PRODES), including project targets.
 

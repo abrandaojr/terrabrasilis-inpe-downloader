@@ -12,6 +12,15 @@ Usage
     python 00_pipeline.py              # run all steps
     python 00_pipeline.py --from 2     # resume from step 2
     python 00_pipeline.py --steps 1 3  # run only steps 1 and 3
+
+Author
+------
+Amintas Brandão Jr. <abrandaojr@gmail.com>
+Imazon — Instituto do Homem e Meio Ambiente da Amazônia
+
+License
+-------
+MIT
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ __all__: list[str] = []
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -94,7 +104,6 @@ def main() -> None:
     skipped    = [s for s in STEPS if s[0] not in selected]
     pipeline_t = time.perf_counter()
 
-    from datetime import datetime
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  PRODES Pipeline  v{__version__}  |  {now}  |  {total} step(s) selected")

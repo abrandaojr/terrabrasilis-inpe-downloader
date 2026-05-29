@@ -55,6 +55,7 @@ _bootstrap(
     ("numpy",      "numpy"),
 )
 
+from datetime import datetime     # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np               # noqa: E402
 
@@ -91,7 +92,6 @@ DGRAY = "#444444"
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    from datetime import datetime
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  Deforestation Chart  v{__version__}  |  {now}")

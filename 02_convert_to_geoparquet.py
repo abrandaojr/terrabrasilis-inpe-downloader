@@ -39,10 +39,7 @@ from __future__ import annotations
 __version__ = "2.0.0"
 __all__: list[str] = []
 
-import contextlib
-import importlib
 import importlib.util
-import io
 import json
 import logging
 import shutil
@@ -54,7 +51,7 @@ import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.WARNING)
 log = logging.getLogger(__name__)
@@ -98,7 +95,6 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 
 
 _bootstrap(
-    ("requests",  "requests"),
     ("geopandas", "geopandas"),
     ("pyogrio",   "pyogrio"),
     ("pyarrow",   "pyarrow"),
@@ -108,7 +104,6 @@ _bootstrap(
     ("rasterio",  "rasterio"),
 )
 
-import requests  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -120,12 +115,6 @@ CONFIG: dict[str, object] = {
     "source_dir": r"C:\Amintas\Prodes\zip\2026-05-07",
     "dest_dir":   r"C:\Amintas\Prodes\geoparquet",
 
-    # ---- Remote vector converter (fetched once, cached locally) -----------
-    "github_raw": (
-        "https://raw.githubusercontent.com/abrandaojr/"
-        "vector-to-geoparquet/main/vector_to_geoparquet.py"
-    ),
-
     # ---- Extraction --------------------------------------------------------
     # Set to a path to keep extracted files between runs (faster re-runs).
     # None = use a temporary directory that is deleted after each run.
@@ -135,11 +124,9 @@ CONFIG: dict[str, object] = {
     "n_workers": 8,
 
     # ---- Vector GeoParquet options -----------------------------------------
-    "tile_size_m":       25_000,   # Hilbert sort granularity
     "row_group_size":    65_536,
     "compression":       "zstd",
-    "compression_level": 3,
-    "hilbert_p":         15,
+    "hilbert_p":         15,   # Hilbert curve precision: 2^p grid cells per axis
 
     # ---- Raster COG options (optimized for zonal stats, 64 GB RAM) ---------
     # Target CRS for all rasters (equal-area — required for correct area math)
@@ -163,43 +150,10 @@ CONFIG: dict[str, object] = {
 
 _SOURCE_DIR  = Path(str(CONFIG["source_dir"]))
 _DEST_DIR    = Path(str(CONFIG["dest_dir"]))
-_CACHE_MOD   = Path(__file__).parent / "_vector_to_geoparquet.py"
-_GPQ_KWARGS: dict[str, object] = {
-    k: CONFIG[k]
-    for k in ("tile_size_m", "row_group_size", "compression", "compression_level", "hilbert_p")
-}
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
 _RASTER_EXT  = frozenset({".tif", ".tiff"})
 SEP          = "=" * 65
 DIV          = "-" * 65
-
-# ---------------------------------------------------------------------------
-# Vector converter loader
-# ---------------------------------------------------------------------------
-
-def _load_vector_converter() -> Callable:
-    """Return convert_to_geoparquet, fetching from GitHub if the cache is missing or stale."""
-    if _CACHE_MOD.exists():
-        text  = _CACHE_MOD.read_text(encoding="utf-8")
-        stale = "__version__" not in text or '"1.2.0"' not in text
-        if stale:
-            _CACHE_MOD.unlink()
-            print("  [cache] stale — re-fetching ...", end=" ", flush=True)
-        else:
-            print(f"  [cache] {_CACHE_MOD.name}")
-
-    if not _CACHE_MOD.exists():
-        print("  [fetch] downloading vector converter ...", end=" ", flush=True)
-        response = requests.get(str(CONFIG["github_raw"]), timeout=30)
-        response.raise_for_status()
-        _CACHE_MOD.write_text(response.text, encoding="utf-8")
-        print("ok")
-
-    spec = importlib.util.spec_from_file_location("_vtgp", _CACHE_MOD)
-    mod  = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    mod.__name__ = "_vtgp"
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod.convert_to_geoparquet  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -360,20 +314,57 @@ def _source_mb(job: Job) -> float:
         return 0.0
 
 
-def _convert_vector(job: Job, convert_fn: Callable) -> tuple[str, float, str | None]:
+def _hilbert_sort(gdf, p: int = 15):
+    """Sort GeoDataFrame rows by Hilbert curve index for optimal DuckDB spatial query performance.
+
+    Implemented with vectorized numpy bit-twiddling — no external dependencies.
+    The algorithm is the standard xy2d Hilbert mapping applied to centroid coordinates
+    normalised to a 2^p × 2^p grid.
+    """
+    import numpy as np
+
+    if gdf.empty or gdf.geometry.isna().all():
+        return gdf
+
+    cx = gdf.geometry.centroid.x.to_numpy(dtype=float)
+    cy = gdf.geometry.centroid.y.to_numpy(dtype=float)
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    n   = 1 << p
+    xi  = np.clip(((cx - xmin) / max(xmax - xmin, 1e-10) * (n - 1)).astype(np.int64), 0, n - 1)
+    yi  = np.clip(((cy - ymin) / max(ymax - ymin, 1e-10) * (n - 1)).astype(np.int64), 0, n - 1)
+
+    x, y = xi.copy(), yi.copy()
+    d    = np.zeros(len(x), dtype=np.int64)
+    s    = n >> 1
+    while s > 0:
+        rx = ((x & s) > 0).astype(np.int64)
+        ry = ((y & s) > 0).astype(np.int64)
+        d += s * s * ((3 * rx) ^ ry)
+        m0 = ry == 0
+        m1 = m0 & (rx == 1)
+        x[m1] = n - 1 - x[m1]
+        y[m1] = n - 1 - y[m1]
+        x[m0], y[m0] = y[m0].copy(), x[m0].copy()
+        s >>= 1
+
+    return gdf.iloc[np.argsort(d)].reset_index(drop=True)
+
+
+def _convert_vector(job: Job) -> tuple[str, float, str | None]:
+    import geopandas as gpd
+
     src_mb = _source_mb(job)
     job.out_path.parent.mkdir(parents=True, exist_ok=True)
-    sink = io.StringIO()
     try:
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            convert_fn(
-                input_path=str(job.local_path),
-                output_path=str(job.out_path),
-                layer=job.layer,
-                **_GPQ_KWARGS,
-            )
+        gdf = gpd.read_file(str(job.local_path), layer=job.layer)
+        gdf = _hilbert_sort(gdf, p=int(CONFIG["hilbert_p"]))
+        gdf.to_parquet(
+            job.out_path,
+            compression=str(CONFIG["compression"]),
+            row_group_size=int(CONFIG["row_group_size"]),
+        )
         if not job.out_path.exists() or job.out_path.stat().st_size == 0:
-            raise RuntimeError("output missing or empty after conversion")
+            raise RuntimeError("output missing or empty")
         return "ok", src_mb, None
     except Exception as exc:
         job.out_path.unlink(missing_ok=True)
@@ -460,10 +451,10 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
         return "error", src_mb, str(exc)
 
 
-def _run_job(job: Job, convert_fn: Callable) -> tuple[str, float, str | None]:
+def _run_job(job: Job) -> tuple[str, float, str | None]:
     if job.kind == "tif":
         return _convert_raster(job)
-    return _convert_vector(job, convert_fn)
+    return _convert_vector(job)
 
 # ---------------------------------------------------------------------------
 # Reporting helpers
@@ -605,8 +596,6 @@ def main() -> None:
     print(f"  PRODES → GeoParquet + COG  v{__version__}  |  {now}")
     print(f"{SEP}")
 
-    convert_fn = _load_vector_converter()
-
     if not _SOURCE_DIR.exists():
         sys.exit(f"[FATAL] source directory not found: {_SOURCE_DIR}")
 
@@ -688,7 +677,7 @@ def main() -> None:
 
         with ThreadPoolExecutor(max_workers=int(CONFIG["n_workers"])) as pool:
             futures: dict[Future, tuple[int, Job]] = {
-                pool.submit(_run_job, job, convert_fn): (offset + i, job)
+                pool.submit(_run_job, job): (offset + i, job)
                 for i, job in enumerate(todo_jobs, 1)
             }
             for fut in as_completed(futures):

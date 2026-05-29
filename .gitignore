@@ -16,9 +16,6 @@ venv/
 env/
 ENV/
 
-# Runtime-fetched converter (downloaded automatically by script 02)
-_vector_to_geoparquet.py
-
 # Output data (large binary files — do not commit)
 *.parquet
 *.tif

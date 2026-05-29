@@ -13,9 +13,7 @@ lxml>=5.0
 tqdm>=4.66
 
 # --- script 02 ---
-# vector-to-geoparquet — packaging bug incompatível com setuptools 80+
-# instalar quando o repo for corrigido:
-# git+https://github.com/abrandaojr/vector-to-geoparquet.git
+git+https://github.com/abrandaojr/vector-to-geoparquet.git
 geopandas>=1.0
 pyogrio>=0.9
 pyarrow>=17.0

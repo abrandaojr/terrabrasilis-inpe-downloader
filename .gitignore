@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Runtime-fetched converter (downloaded automatically by script 02)
+_vector_to_geoparquet.py
+
+# Output data (large binary files — do not commit)
+*.parquet
+*.tif
+*.tiff
+*.zip
+
+# Reports generated at runtime
+validation_report.json
+report_*.json
+relatorio_*.json
+terrabrasilis_zips.csv
+terrabrasilis_zips.json
+
+# Chart output
+*.png
+*.jpg
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp

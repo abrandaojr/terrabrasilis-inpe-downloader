@@ -13,15 +13,15 @@ A collection of Python scripts to download, convert, and visualize deforestation
 TerraBrasilis website
         │
         ▼
-01_download_zips.py           ← scrape + download all .zip files
+01_download_zips.py          ← scrape + download all .zip files
         │
         ▼  (ZIP archives)
-02_convert_to_geoparquet.py   ← convert vectors → GeoParquet  (DuckDB-optimized)
-        or
-03_convert_tiled_vectors_rasters.py  ← convert vectors + rasters → tiled GeoParquet / COG GeoTIFF
+02_convert_to_geoparquet.py  ← convert all formats in one pass
+        │  Vectors (SHP/GPKG) → GeoParquet (Hilbert sort, zstd)
+        │  Rasters (TIF/TIFF) → COG GeoTIFF (ESRI:102033, optimized for zonal stats)
         │
         ▼  (analysis-ready files)
-04_deforestation_chart.py     ← generate annual deforestation rate chart
+04_deforestation_chart.py    ← generate annual deforestation rate chart
 ```
 
 ---
@@ -37,16 +37,16 @@ Discovers, downloads, and validates all `.zip` files from TerraBrasilis.
 - Inventory table showing already-downloaded vs. pending files
 - Resume support — interrupted downloads continue from where they stopped
 - ZIP integrity check + automatic repair loop
-- Saves a `validation_report.json` and a CSV/JSON index of all files found
+- Saves `validation_report.json` and a CSV/JSON index of all files found
 
-**Configuration** (top of file):
+**Configuration** (constants at the top of the file):
+
 | Variable | Default | Description |
 |---|---|---|
 | `BASE_URL` | TerraBrasilis download page | Source URL to scrape |
 | `ROOT_FOLDER` | `C:\Amintas\Prodes\zip` | Root storage directory |
 | `DEST_FOLDER` | `ROOT_FOLDER\<today>` | Download destination |
 
-**Usage:**
 ```bash
 python 01_download_zips.py
 ```
@@ -55,57 +55,36 @@ python 01_download_zips.py
 
 ### `02_convert_to_geoparquet.py`
 
-Batch-converts PRODES ZIP archives to DuckDB-optimized GeoParquet files using an external converter fetched from GitHub.
+Converts all PRODES ZIP archives in a single pass. Handles both vectors and rasters.
 
-**Features:**
-- Incremental — skips already-converted files
-- Parallel conversion via thread pool
-- Supports `.gpkg` (all layers) and `.shp` (orphan shapefiles)
-- Generates a timestamped JSON report per run
-- `--list` flag to inspect existing GeoParquets and their CRS
+**Vectors (SHP / GPKG)** → GeoParquet
+- DuckDB-optimized: Hilbert curve row ordering, zstd compression
+- Supports all GPKG layers; orphan SHPs as fallback
+- Incremental: skips already-converted files
+
+**Rasters (TIF / TIFF)** → Cloud-Optimized GeoTIFF
+- Reprojects to **ESRI:102033** (South America Equidistant Conic — equal-area, required for correct zonal stats area calculations)
+- COG format with 512×512 internal tiles and DEFLATE+predictor=2 compression
+- Internal overviews at ×2, ×4, ×8, ×16, ×32 — lets `rasterstats` and similar tools pick the right resolution automatically without loading the full file
+- Optimized for machines with 64 GB RAM: tile size chosen to balance sequential throughput and random-access reads from small polygons
 
 **Configuration** (the `CONFIG` dict at the top of the file):
+
 | Key | Default | Description |
 |---|---|---|
 | `source_dir` | `C:\Amintas\Prodes\zip\2026-05-07` | Directory with input ZIPs |
 | `dest_dir` | `C:\Amintas\Prodes\geoparquet` | Output directory |
 | `n_workers` | `8` | Parallel conversion threads |
-| `compression` | `zstd` | Parquet compression codec |
-| `tile_size_m` | `25000` | Hilbert sort tile size (metres) |
+| `compression` | `zstd` | Vector Parquet compression |
+| `hilbert_p` | `15` | Hilbert sort precision |
+| `raster_crs` | `ESRI:102033` | Target CRS for rasters |
+| `cog_tile_px` | `512` | Internal COG tile size (px) |
+| `raster_compress` | `DEFLATE` | Raster compression codec |
+| `overview_levels` | `[2,4,8,16,32]` | Overview decimation factors |
 
-**Usage:**
 ```bash
-python 02_convert_to_geoparquet.py          # convert
-python 02_convert_to_geoparquet.py --list   # list existing GeoParquets
-```
-
----
-
-### `03_convert_tiled_vectors_rasters.py`
-
-Alternative converter with full raster support, spatial tiling, and CRS reprojection.
-
-**Features:**
-- Reprojects all data to **ESRI:102033** (South America Equidistant Conic)
-- Splits vectors into 25 × 25 km tiles aligned to a global grid; adds `tile_id`, `tile_col`, `tile_row` attributes
-- Converts rasters to Cloud-Optimized GeoTIFF (COG) tiles with internal overviews
-- Geometry repair (`buffer(0)` + `make_valid`) and polygon-type filtering
-- Parallel processing via `ThreadPoolExecutor`
-- JSON processing report
-
-**Configuration** (constants at the top of the file):
-| Variable | Default | Description |
-|---|---|---|
-| `PASTA_ZIPS` | `C:\Amintas\Prodes\zip\<today>` | Input ZIP directory |
-| `PASTA_VET` | `PASTA_ZIPS\geoparquet` | Vector output directory |
-| `PASTA_RAS` | `PASTA_ZIPS\raster` | Raster output directory |
-| `CRS_ALVO` | `ESRI:102033` | Target CRS |
-| `TILE_M` | `25000` | Tile size in metres |
-| `MAX_WORKERS` | `4` | Parallel threads |
-
-**Usage:**
-```bash
-python 03_convert_tiled_vectors_rasters.py
+python 02_convert_to_geoparquet.py           # convert
+python 02_convert_to_geoparquet.py --list    # list existing outputs with CRS info
 ```
 
 ---
@@ -116,7 +95,6 @@ Generates a publication-ready bar chart of annual Amazon deforestation rates (IN
 
 **Output:** `amazon_deforestation_norad.png`
 
-**Usage:**
 ```bash
 python 04_deforestation_chart.py
 ```
@@ -128,10 +106,10 @@ python 04_deforestation_chart.py
 All scripts auto-install their dependencies via `pip` on first run. For a manual install:
 
 ```bash
-# Core (scripts 01–03)
+# Scripts 01 and 02
 pip install requests beautifulsoup4 lxml tqdm geopandas pyogrio pyarrow shapely rasterio numpy
 
-# Script 04 only
+# Script 04
 pip install matplotlib numpy
 
 # Optional — Selenium fallback for script 01
@@ -147,16 +125,20 @@ Python **3.11+** recommended.
 ```
 C:\Amintas\Prodes\
 ├── zip\
-│   └── YYYY-MM-DD\          ← date-stamped download folders
+│   └── YYYY-MM-DD\          ← date-stamped download folders (script 01)
 │       ├── <Biome>\
 │       │   └── <Category>\
 │       │       └── *.zip
-│       ├── geoparquet\      ← vector tiles (script 03)
-│       ├── raster\          ← COG GeoTIFF tiles (script 03)
 │       ├── terrabrasilis_zips.csv
 │       ├── terrabrasilis_zips.json
 │       └── validation_report.json
-└── geoparquet\              ← DuckDB-optimized output (script 02)
+└── geoparquet\              ← converted outputs (script 02)
+    ├── <rel_dir>\
+    │   └── <zip_stem>\
+    │       ├── <gpkg_stem>\
+    │       │   └── <layer>.parquet   ← vector layers (Hilbert sorted)
+    │       ├── <shp_stem>.parquet    ← orphan shapefiles
+    │       └── <tif_stem>.tif        ← COG GeoTIFF (ESRI:102033)
     └── report_YYYYMMDD_HHMMSS.json
 ```
 

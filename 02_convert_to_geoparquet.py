@@ -95,7 +95,7 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 
 
 _bootstrap(
-    ("vector-to-geoparquet", "vector_to_geoparquet"),
+    ("git+https://github.com/abrandaojr/vector-to-geoparquet.git", "vector_to_geoparquet"),
     ("geopandas",            "geopandas"),
     ("pyogrio",              "pyogrio"),
     ("pyarrow",              "pyarrow"),

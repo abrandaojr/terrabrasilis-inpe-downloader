@@ -95,13 +95,14 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 
 
 _bootstrap(
-    ("geopandas", "geopandas"),
-    ("pyogrio",   "pyogrio"),
-    ("pyarrow",   "pyarrow"),
-    ("shapely",   "shapely"),
-    ("numpy",     "numpy"),
-    ("tqdm",      "tqdm"),
-    ("rasterio",  "rasterio"),
+    ("vector-to-geoparquet", "vector_to_geoparquet"),
+    ("geopandas",            "geopandas"),
+    ("pyogrio",              "pyogrio"),
+    ("pyarrow",              "pyarrow"),
+    ("shapely",              "shapely"),
+    ("numpy",                "numpy"),
+    ("tqdm",                 "tqdm"),
+    ("rasterio",             "rasterio"),
 )
 
 from tqdm import tqdm  # noqa: E402
@@ -124,9 +125,11 @@ CONFIG: dict[str, object] = {
     "n_workers": 8,
 
     # ---- Vector GeoParquet options -----------------------------------------
+    "tile_size_m":       25_000,
     "row_group_size":    65_536,
     "compression":       "zstd",
-    "hilbert_p":         15,   # Hilbert curve precision: 2^p grid cells per axis
+    "compression_level": 3,
+    "hilbert_p":         15,
 
     # ---- Raster COG options (optimized for zonal stats, 64 GB RAM) ---------
     # Target CRS for all rasters (equal-area — required for correct area math)
@@ -314,54 +317,21 @@ def _source_mb(job: Job) -> float:
         return 0.0
 
 
-def _hilbert_sort(gdf, p: int = 15):
-    """Sort GeoDataFrame rows by Hilbert curve index for optimal DuckDB spatial query performance.
-
-    Implemented with vectorized numpy bit-twiddling — no external dependencies.
-    The algorithm is the standard xy2d Hilbert mapping applied to centroid coordinates
-    normalised to a 2^p × 2^p grid.
-    """
-    import numpy as np
-
-    if gdf.empty or gdf.geometry.isna().all():
-        return gdf
-
-    cx = gdf.geometry.centroid.x.to_numpy(dtype=float)
-    cy = gdf.geometry.centroid.y.to_numpy(dtype=float)
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-    n   = 1 << p
-    xi  = np.clip(((cx - xmin) / max(xmax - xmin, 1e-10) * (n - 1)).astype(np.int64), 0, n - 1)
-    yi  = np.clip(((cy - ymin) / max(ymax - ymin, 1e-10) * (n - 1)).astype(np.int64), 0, n - 1)
-
-    x, y = xi.copy(), yi.copy()
-    d    = np.zeros(len(x), dtype=np.int64)
-    s    = n >> 1
-    while s > 0:
-        rx = ((x & s) > 0).astype(np.int64)
-        ry = ((y & s) > 0).astype(np.int64)
-        d += s * s * ((3 * rx) ^ ry)
-        m0 = ry == 0
-        m1 = m0 & (rx == 1)
-        x[m1] = n - 1 - x[m1]
-        y[m1] = n - 1 - y[m1]
-        x[m0], y[m0] = y[m0].copy(), x[m0].copy()
-        s >>= 1
-
-    return gdf.iloc[np.argsort(d)].reset_index(drop=True)
-
-
 def _convert_vector(job: Job) -> tuple[str, float, str | None]:
-    import geopandas as gpd
+    from vector_to_geoparquet import convert_to_geoparquet
 
     src_mb = _source_mb(job)
     job.out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        gdf = gpd.read_file(str(job.local_path), layer=job.layer)
-        gdf = _hilbert_sort(gdf, p=int(CONFIG["hilbert_p"]))
-        gdf.to_parquet(
-            job.out_path,
-            compression=str(CONFIG["compression"]),
+        convert_to_geoparquet(
+            input_path=str(job.local_path),
+            output_path=str(job.out_path),
+            layer=job.layer,
+            tile_size_m=float(CONFIG["tile_size_m"]),
             row_group_size=int(CONFIG["row_group_size"]),
+            compression=str(CONFIG["compression"]),
+            compression_level=int(CONFIG["compression_level"]),
+            hilbert_p=int(CONFIG["hilbert_p"]),
         )
         if not job.out_path.exists() or job.out_path.stat().st_size == 0:
             raise RuntimeError("output missing or empty")

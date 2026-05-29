@@ -13,6 +13,7 @@ lxml>=5.0
 tqdm>=4.66
 
 # --- script 02 ---
+vector-to-geoparquet
 geopandas>=1.0
 pyogrio>=0.9
 pyarrow>=17.0

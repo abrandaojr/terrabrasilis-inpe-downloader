@@ -24,6 +24,14 @@ TerraBrasilis website
 03_deforestation_chart.py    ← generate annual deforestation rate chart
 ```
 
+Run the full pipeline with a single command:
+
+```bash
+python 00_pipeline.py              # all steps
+python 00_pipeline.py --from 2    # resume from step 2
+python 00_pipeline.py --steps 1 3 # run only steps 1 and 3
+```
+
 ---
 
 ## Scripts

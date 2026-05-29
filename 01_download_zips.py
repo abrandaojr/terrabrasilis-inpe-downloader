@@ -122,6 +122,10 @@ CONFIG: dict[str, object] = {
     "http_timeout":     30,
     "download_timeout": 600,
     "chunk_size":       8 * 1024 * 1024,   # 8 MB
+    # Files to permanently skip (exact filename, case-sensitive).
+    "skip_files": [
+        "prodes_brasil_2023_arte.zip",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -134,6 +138,7 @@ DEST_FOLDER      = ROOT_FOLDER / datetime.now().strftime("%Y-%m-%d")
 HTTP_TIMEOUT     = int(CONFIG["http_timeout"])
 DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
 CHUNK_SIZE       = int(CONFIG["chunk_size"])
+SKIP_FILES       = frozenset(CONFIG["skip_files"])  # type: ignore[arg-type]
 SEP              = "=" * 65
 DIV              = "-" * 65
 
@@ -810,6 +815,11 @@ def main() -> None:
         return
 
     zips = resolve_unique_filenames(zips)
+
+    if SKIP_FILES:
+        before = len(zips)
+        zips   = [z for z in zips if z["filename"] not in SKIP_FILES]
+        print(f"  -> {before - len(zips)} file(s) excluded by skip_files config.")
 
     # ------------------------------------------------------------------ #
     # Step 2: show inventory table                                        #

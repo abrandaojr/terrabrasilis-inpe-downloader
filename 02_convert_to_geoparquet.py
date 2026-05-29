@@ -68,8 +68,12 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     missing = [pip for pip, mod in packages if not importlib.util.find_spec(mod)]
     if not missing:
         return
-    for extra in ([], ["--break-system-packages"]):
-        cmd = [sys.executable, "-m", "pip", "install", "--quiet", *extra, *missing]
+    strategies = [
+        ["uv", "pip", "install", "--quiet", *missing],
+        [sys.executable, "-m", "pip", "install", "--quiet", *missing],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", *missing],
+    ]
+    for cmd in strategies:
         try:
             subprocess.check_call(cmd, stderr=subprocess.DEVNULL)
             return

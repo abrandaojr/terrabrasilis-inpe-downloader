@@ -151,6 +151,8 @@ _GPQ_KWARGS: dict[str, object] = {
 }
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
 _RASTER_EXT  = frozenset({".tif", ".tiff"})
+SEP          = "=" * 65
+DIV          = "-" * 65
 
 # ---------------------------------------------------------------------------
 # Vector converter loader
@@ -580,9 +582,9 @@ def list_outputs() -> None:
 def main() -> None:
     t0  = time.perf_counter()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"\n{'─' * 60}")
+    print(f"\n{SEP}")
     print(f"  PRODES → GeoParquet + COG  v{__version__}  |  {now}")
-    print(f"{'─' * 60}")
+    print(f"{SEP}")
 
     convert_fn = _load_vector_converter()
 

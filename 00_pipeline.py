@@ -14,6 +14,11 @@ Usage
     python 00_pipeline.py --steps 1 3  # run only steps 1 and 3
 """
 
+from __future__ import annotations
+
+__version__ = "1.0.0"
+__all__: list[str] = []
+
 import subprocess
 import sys
 import time
@@ -89,8 +94,10 @@ def main() -> None:
     skipped    = [s for s in STEPS if s[0] not in selected]
     pipeline_t = time.perf_counter()
 
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
-    print(f"  PRODES Pipeline  —  {total} step(s) selected")
+    print(f"  PRODES Pipeline  v{__version__}  |  {now}  |  {total} step(s) selected")
     if skipped:
         print(f"  Skipping: {', '.join(f'step {s[0]}' for s in skipped)}")
     print(SEP)

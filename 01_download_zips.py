@@ -1,13 +1,12 @@
 """
-terrabrasilis_list_zips.py
---------------------------
+01_download_zips.py
+===================
 Discovers, lists, downloads, and verifies all .zip files at:
   https://terrabrasilis.dpi.inpe.br/en/download-files/
 
 Saves to: C:\\Amintas\\Prodes\\zip\\<today's-date>\\
-Dependencies are installed automatically.
 
-WORKFLOW
+Workflow
 --------
 1. Scrape the TerraBrasilis download page for all .zip links.
 2. For each file, check whether it already exists anywhere under ROOT_FOLDER.
@@ -18,61 +17,61 @@ WORKFLOW
 5. Download only the missing files, one at a time, with resume support.
 6. Validate every expected file (ZIP integrity) and repair if needed.
 
-SKIP LOGIC
+Skip logic
 ----------
 A file is skipped if a non-empty, non-.tmp file with the same name exists
 anywhere under ROOT_FOLDER, regardless of subfolder depth or structure.
 
-RESUME SUPPORT
+Resume support
 --------------
 Each file is streamed to a .tmp file first. If the script is interrupted,
 the .tmp file is kept on disk. On the next run, an HTTP Range request
-resumes from where it stopped -- no bytes are re-downloaded.
+resumes from where it stopped — no bytes are re-downloaded.
+
+Usage
+-----
+    python 01_download_zips.py
+
+Author
+------
+Amintas Brandão Jr. <abrandaojr@gmail.com>
+Imazon — Instituto do Homem e Meio Ambiente da Amazônia
+
+License
+-------
+MIT
 """
 
-import sys
+from __future__ import annotations
+
+__version__ = "1.0.0"
+__all__: list[str] = []
+
+import importlib.util
 import subprocess
+import sys
 
 
 # ---------------------------------------------------------------------------
-# Dependency management
+# Dependency bootstrap
 # ---------------------------------------------------------------------------
 
-def _can_import(module: str) -> bool:
-    try:
-        __import__(module)
-        return True
-    except ImportError:
-        return False
-
-
-def _install_packages(packages: list[str]) -> None:
-    print(f"[setup] Installing: {', '.join(packages)} ...")
-    strategies = [
-        ["uv", "pip", "install", "--quiet"] + packages,
-        [sys.executable, "-m", "pip", "install", "--quiet"] + packages,
-        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages"] + packages,
-    ]
-    for cmd in strategies:
+def _bootstrap(*packages: tuple[str, str]) -> None:
+    """Install missing packages at runtime."""
+    missing = [pip for pip, mod in packages if not importlib.util.find_spec(mod)]
+    if not missing:
+        return
+    for extra in ([], ["--break-system-packages"]):
+        cmd = [sys.executable, "-m", "pip", "install", "--quiet", *extra, *missing]
         try:
             subprocess.check_call(cmd, stderr=subprocess.DEVNULL)
-            print("[setup] OK.\n")
             return
         except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-    sys.exit(
-        f"[ERROR] Could not install: {' '.join(packages)}\n"
-        f"        Try: uv pip install {' '.join(packages)}"
-    )
+            pass
+    sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
 
 
-def _ensure_deps(*pairs: tuple[str, str]) -> None:
-    missing = [pkg for pkg, mod in pairs if not _can_import(mod)]
-    if missing:
-        _install_packages(missing)
-
-
-_ensure_deps(
+_bootstrap(
     ("requests",       "requests"),
     ("beautifulsoup4", "bs4"),
     ("lxml",           "lxml"),
@@ -114,16 +113,29 @@ class ZipEntry(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# CONFIG  ← the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
-BASE_URL         = "https://terrabrasilis.dpi.inpe.br/en/download-files/"
-ROOT_FOLDER      = Path(r"C:\Amintas\Prodes\zip")
+CONFIG: dict[str, object] = {
+    "base_url":         "https://terrabrasilis.dpi.inpe.br/en/download-files/",
+    "root_folder":      r"C:\Amintas\Prodes\zip",
+    "http_timeout":     30,
+    "download_timeout": 600,
+    "chunk_size":       8 * 1024 * 1024,   # 8 MB
+}
+
+# ---------------------------------------------------------------------------
+# Module-level constants derived from CONFIG
+# ---------------------------------------------------------------------------
+
+BASE_URL         = str(CONFIG["base_url"])
+ROOT_FOLDER      = Path(str(CONFIG["root_folder"]))
 DEST_FOLDER      = ROOT_FOLDER / datetime.now().strftime("%Y-%m-%d")
-HTTP_TIMEOUT     = 30
-DOWNLOAD_TIMEOUT = 600
-CHUNK_SIZE       = 8 * 1024 * 1024   # 8 MB
-SEP              = "=" * 70
+HTTP_TIMEOUT     = int(CONFIG["http_timeout"])
+DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
+CHUNK_SIZE       = int(CONFIG["chunk_size"])
+SEP              = "=" * 65
+DIV              = "-" * 65
 
 HEADERS = {
     "User-Agent": (
@@ -225,7 +237,7 @@ def _infer_from_url(url: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
-    _ensure_deps(
+    _bootstrap(
         ("selenium",          "selenium"),
         ("webdriver-manager", "webdriver_manager"),
     )
@@ -770,6 +782,11 @@ def save_json(zips: list[ZipEntry], folder: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"\n{SEP}")
+    print(f"  TerraBrasilis Download  v{__version__}  |  {now}")
+    print(f"{SEP}")
+
     session     = _make_session()
     MAX_PASSES  = 20
     RETRY_DELAY = 30

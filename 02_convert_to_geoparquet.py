@@ -64,12 +64,27 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
-    """Install missing packages at runtime."""
+    """Install missing packages at runtime.
+
+    Tries uv first (better wheel resolution for native libs on Windows).
+    Self-installs uv via pip if it is not found on PATH.
+    Falls back to plain pip as a last resort.
+    """
+    import shutil
+
     missing = [pip for pip, mod in packages if not importlib.util.find_spec(mod)]
     if not missing:
         return
+
+    if not shutil.which("uv"):
+        subprocess.call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
+            stderr=subprocess.DEVNULL,
+        )
+
     strategies = [
         ["uv", "pip", "install", "--quiet", *missing],
+        [sys.executable, "-m", "uv", "pip", "install", "--quiet", *missing],
         [sys.executable, "-m", "pip", "install", "--quiet", *missing],
         [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", *missing],
     ]

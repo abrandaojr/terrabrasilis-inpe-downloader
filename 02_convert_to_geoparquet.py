@@ -80,8 +80,8 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
         )
 
     strategies = [
-        ["uv", "pip", "install", "--quiet", *missing],
-        [sys.executable, "-m", "uv", "pip", "install", "--quiet", *missing],
+        ["uv", "pip", "install", "--python", sys.executable, "--quiet", *missing],
+        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet", *missing],
         [sys.executable, "-m", "pip", "install", "--quiet", *missing],
         [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", *missing],
     ]

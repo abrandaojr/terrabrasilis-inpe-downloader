@@ -158,6 +158,7 @@ HTTP_TIMEOUT     = int(CONFIG["http_timeout"])
 DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
 CHUNK_SIZE       = int(CONFIG["chunk_size"])
 SKIP_FILES       = frozenset(CONFIG["skip_files"])  # type: ignore[arg-type]
+_HTML_PARSER     = "lxml" if importlib.util.find_spec("lxml") else "html.parser"
 SEP              = "=" * 65
 DIV              = "-" * 65
 
@@ -198,7 +199,7 @@ def fetch_static(url: str) -> list[ZipEntry]:
     print(f"[scrape] Static request at: {url}")
     resp = _make_session().get(url, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
-    return _extract_zip_links(BeautifulSoup(resp.text, "lxml"), base_url=url)
+    return _extract_zip_links(BeautifulSoup(resp.text, _HTML_PARSER), base_url=url)
 
 
 def _extract_zip_links(soup: BeautifulSoup, base_url: str) -> list[ZipEntry]:
@@ -284,7 +285,7 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
         time.sleep(wait_seconds)
         _expand_all_menus(driver)
         time.sleep(3)
-        return _extract_zip_links(BeautifulSoup(driver.page_source, "lxml"), base_url=url)
+        return _extract_zip_links(BeautifulSoup(driver.page_source, _HTML_PARSER), base_url=url)
     finally:
         driver.quit()
 

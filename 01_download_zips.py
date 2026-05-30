@@ -57,15 +57,28 @@ import sys
 # ---------------------------------------------------------------------------
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
-    """Install missing packages at runtime.
+    """Install missing packages into the current Python environment.
 
-    Tries uv first (better wheel resolution for native libs on Windows).
-    Self-installs uv via pip if it is not found on PATH.
-    Falls back to plain pip as a last resort.
+    Strategy order (most to least reliable for targeting sys.executable):
+      1. python -m pip          — always installs into the running interpreter
+      2. uv pip --python        — faster wheel resolution for native libs
+      3. python -m uv pip       — uv via module, same target guarantee
+      4. pip --break-system-pkg — last resort for externally-managed envs
+
+    After each attempt, importlib.invalidate_caches() re-scans site-packages
+    so that newly installed packages are immediately discoverable.
+    Only packages that remain missing are retried with subsequent strategies.
     """
+    import importlib
     import shutil
 
-    missing = [pip for pip, mod in packages if not importlib.util.find_spec(mod)]
+    mod_by_pip = {pip: mod for pip, mod in packages}
+
+    def _still_missing(pkgs: list[str]) -> list[str]:
+        importlib.invalidate_caches()
+        return [p for p in pkgs if not importlib.util.find_spec(mod_by_pip[p])]
+
+    missing = _still_missing(list(mod_by_pip))
     if not missing:
         return
 
@@ -76,18 +89,22 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
         )
 
     strategies = [
-        ["uv", "pip", "install", "--python", sys.executable, "--quiet", *missing],
-        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet", *missing],
-        [sys.executable, "-m", "pip", "install", "--quiet", *missing],
-        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", *missing],
+        [sys.executable, "-m", "pip", "install", "--quiet"],
+        ["uv", "pip", "install", "--python", sys.executable, "--quiet"],
+        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet"],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages"],
     ]
-    for cmd in strategies:
-        try:
-            subprocess.check_call(cmd, stderr=subprocess.DEVNULL)
+    for base in strategies:
+        if not missing:
             return
+        try:
+            subprocess.check_call(base + missing, stderr=subprocess.DEVNULL)
+            missing = _still_missing(missing)
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
-    sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
+
+    if missing:
+        sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
 
 
 _bootstrap(

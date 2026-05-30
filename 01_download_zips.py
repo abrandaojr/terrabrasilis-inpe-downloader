@@ -261,7 +261,31 @@ def _infer_from_url(url: str) -> tuple[str, str]:
 # Scraping - dynamic (Selenium fallback)
 # ---------------------------------------------------------------------------
 
+def _find_chrome() -> str | None:
+    """Return the Chrome executable path, or None if not found."""
+    import shutil
+
+    if exe := shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chromium"):
+        return exe
+    for candidate in (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Users\Amintas\AppData\Local\Google\Chrome\Application\chrome.exe",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
 def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
+    chrome_path = _find_chrome()
+    if not chrome_path:
+        print(
+            "  [skip] Selenium fallback requires Google Chrome.\n"
+            "         Install Chrome and re-run, or download files manually."
+        )
+        return []
+
     _bootstrap(
         ("selenium",          "selenium"),
         ("webdriver-manager", "webdriver_manager"),
@@ -273,6 +297,7 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
 
     print(f"[scrape] Dynamic rendering (Selenium) at: {url}")
     opts = Options()
+    opts.binary_location = chrome_path
     for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage"):
         opts.add_argument(arg)
     opts.add_argument(f"user-agent={HEADERS['User-Agent']}")

@@ -888,10 +888,16 @@ def main() -> None:
 
     if not zips:
         print(
-            "  No ZIP files found on the page.\n"
-            "  The site may be temporarily unavailable or require a browser session.\n"
-            "  If all files are already downloaded, the pipeline can continue normally.\n"
-            "  Run:  python 00_pipeline.py --from 2"
+            "  No ZIP files found via scraping.\n"
+            "  Opening the download page in your default browser..."
+        )
+        import webbrowser
+        webbrowser.open(BASE_URL)
+        print(
+            f"  URL: {BASE_URL}\n"
+            "  Download the files manually and place them under:\n"
+            f"  {ROOT_FOLDER}\n"
+            "  Then resume the pipeline with:  python 00_pipeline.py --from 2"
         )
         return
 

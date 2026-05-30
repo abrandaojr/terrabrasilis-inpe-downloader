@@ -24,6 +24,9 @@ rasterio>=1.3
 # --- script 03 ---
 matplotlib>=3.9
 
-# --- optional: Selenium fallback for script 01 ---
+# --- script 04 ---
+python-pptx>=1.0
+
+# --- optional: Selenium fallback for script 01 (auto-installed on demand) ---
 # selenium>=4.20
 # webdriver-manager>=4.0

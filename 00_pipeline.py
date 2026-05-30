@@ -79,8 +79,11 @@ def _run_step(n: int, script: str, label: str, step_idx: int, total: int) -> flo
     print(f"  STEP {n}/{len(STEPS)}  [{step_idx}/{total} selected]  —  {label}")
     print(f"{SEP}\n")
 
-    t0     = time.perf_counter()
-    result = subprocess.run([sys.executable, str(HERE / script)])
+    t0 = time.perf_counter()
+    try:
+        result = subprocess.run([sys.executable, str(HERE / script)])
+    except KeyboardInterrupt:
+        raise
     elapsed = time.perf_counter() - t0
 
     if result.returncode != 0:
@@ -131,4 +134,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{SEP}")
+        print("  Interrupted.")
+        print(SEP + "\n")
+        sys.exit(130)

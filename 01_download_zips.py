@@ -313,23 +313,33 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
     from webdriver_manager.chrome import ChromeDriverManager
 
     print(f"[scrape] Dynamic rendering (Selenium) at: {url}")
-    opts = Options()
-    opts.binary_location = chrome_path
-    for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage"):
-        opts.add_argument(arg)
-    opts.add_argument(f"user-agent={HEADERS['User-Agent']}")
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()), options=opts
-    )
+    driver = None
     try:
+        opts = Options()
+        opts.binary_location = chrome_path
+        for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage"):
+            opts.add_argument(arg)
+        opts.add_argument(f"user-agent={HEADERS['User-Agent']}")
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()), options=opts
+        )
         driver.get(url)
         print(f"    Waiting {wait_seconds}s for JS to render...")
         time.sleep(wait_seconds)
         _expand_all_menus(driver)
         time.sleep(3)
         return _extract_zip_links(BeautifulSoup(driver.page_source, _HTML_PARSER), base_url=url)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print(f"  [skip] Selenium failed: {type(exc).__name__}: {exc}")
+        return []
     finally:
-        driver.quit()
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 def _expand_all_menus(driver) -> None:
@@ -869,11 +879,20 @@ def main() -> None:
     else:
         print("  -> No ZIPs found via static request (JS rendering required).")
         print("  Trying Selenium...")
-        zips = fetch_dynamic(BASE_URL)
+        try:
+            zips = fetch_dynamic(BASE_URL)
+        except Exception as exc:
+            print(f"  -> Selenium error: {exc}")
+            zips = []
         print(f"  -> {len(zips)} ZIP(s) found via Selenium.")
 
     if not zips:
-        print("  No ZIP files found on the page. Nothing to do.")
+        print(
+            "  No ZIP files found on the page.\n"
+            "  The site may be temporarily unavailable or require a browser session.\n"
+            "  If all files are already downloaded, the pipeline can continue normally.\n"
+            "  Run:  python 00_pipeline.py --from 2"
+        )
         return
 
     zips = resolve_unique_filenames(zips)

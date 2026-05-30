@@ -106,7 +106,6 @@ import csv
 import json
 import time
 import zipfile as zf
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
@@ -141,9 +140,7 @@ CONFIG: dict[str, object] = {
     "root_folder":      r"C:\Amintas\Prodes\zip",
     "http_timeout":     30,
     "download_timeout": 600,
-    "chunk_size":       8 * 1024 * 1024,   # 8 MB per stream chunk
-    # Parallel downloads — keep ≤ 4 to avoid overloading the TerraBrasilis server.
-    "n_workers":        4,
+    "chunk_size":       32 * 1024 * 1024,  # 32 MB per stream chunk — maximize single-file throughput
     # Files to permanently skip (exact filename, case-sensitive).
     "skip_files": [
         "prodes_brasil_2023_arte.zip",
@@ -161,7 +158,6 @@ HTTP_TIMEOUT     = int(CONFIG["http_timeout"])
 DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
 CHUNK_SIZE       = int(CONFIG["chunk_size"])
 SKIP_FILES       = frozenset(CONFIG["skip_files"])  # type: ignore[arg-type]
-N_WORKERS        = int(CONFIG["n_workers"])
 _HTML_PARSER     = "lxml" if importlib.util.find_spec("lxml") else "html.parser"
 SEP              = "=" * 65
 DIV              = "-" * 65
@@ -550,7 +546,7 @@ def _download_one(
             total_bytes    = (int(content_length) + bytes_done) if content_length else None
 
             mode = "ab" if bytes_done else "wb"
-            with open(tmp, mode) as f, tqdm(
+            with open(tmp, mode, buffering=CHUNK_SIZE) as f, tqdm(
                 total=total_bytes,
                 initial=bytes_done,
                 unit="B",
@@ -558,7 +554,7 @@ def _download_one(
                 unit_divisor=1024,
                 desc=f"    {name[:55]}",
                 ncols=90,
-                miniters=1,
+                mininterval=0.5,   # update bar at most twice per second
             ) as bar:
                 for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                     f.write(chunk)
@@ -590,30 +586,24 @@ def download_all(
     n = len(zips)
     summary: dict[str, list] = {"ok": [], "error": [], "skipped": [], "forbidden": []}
 
-    workers = min(N_WORKERS, n)
     print(f"\n{SEP}")
-    print(f"  PARALLEL DOWNLOAD  ({n} file(s)  |  {workers} workers)")
+    print(f"  DOWNLOAD  ({n} file(s)  |  full bandwidth per file)")
     print(f"  Destination  : {folder}")
     print(f"  Skip if found: anywhere under {ROOT_FOLDER}")
     print(f"{SEP}\n")
 
-    def _task(args: tuple[int, ZipEntry]) -> tuple[str, str, str | None]:
-        i, z = args
-        # Each thread uses its own session to avoid thread-safety issues.
-        return _download_one(z, folder, _make_session(), force=False, index=i, total=n)
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_task, (i, z)): z for i, z in enumerate(zips, start=1)}
-        for fut in as_completed(futures):
-            name, status, detail = fut.result()
-            if status == "ok":
-                summary["ok"].append(name)
-            elif status == "skipped":
-                summary["skipped"].append(name)
-            elif status == "forbidden":
-                summary["forbidden"].append(name)
-            else:
-                summary["error"].append({"file": name, "error": detail})
+    for i, z in enumerate(zips, start=1):
+        name, status, detail = _download_one(
+            z, folder, session, force=False, index=i, total=n
+        )
+        if status == "ok":
+            summary["ok"].append(name)
+        elif status == "skipped":
+            summary["skipped"].append(name)
+        elif status == "forbidden":
+            summary["forbidden"].append(name)
+        else:
+            summary["error"].append({"file": name, "error": detail})
 
     return summary
 

@@ -39,9 +39,10 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 STEPS: list[tuple[int, str, str]] = [
-    (1, "01_download_zips.py",         "Download ZIPs from TerraBrasilis"),
-    (2, "02_convert_to_geoparquet.py", "Convert vectors → GeoParquet  |  rasters → COG"),
-    (3, "03_deforestation_chart.py",   "Generate deforestation rate chart"),
+    (1, "01_download_zips.py",            "Download ZIPs from TerraBrasilis"),
+    (2, "02_convert_to_geoparquet.py",    "Convert vectors → GeoParquet  |  rasters → COG"),
+    (3, "03_deforestation_chart.py",      "Generate deforestation rate chart"),
+    (4, "04_generate_presentation.py",    "Generate bilingual press PowerPoint"),
 ]
 
 SEP  = "=" * 65

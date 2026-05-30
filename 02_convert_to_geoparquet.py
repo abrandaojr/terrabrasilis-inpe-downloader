@@ -130,7 +130,8 @@ from tqdm import tqdm  # noqa: E402
 
 CONFIG: dict[str, object] = {
     # ---- I/O ---------------------------------------------------------------
-    "source_dir": r"C:\Amintas\Prodes\zip\2026-05-07",
+    # Set source_dir to None to auto-detect the most recent dated download folder.
+    "source_dir": None,   # e.g. r"C:\Amintas\Prodes\zip\2026-05-07"
     "dest_dir":   r"C:\Amintas\Prodes\geoparquet",
 
     # ---- Extraction --------------------------------------------------------
@@ -168,7 +169,24 @@ CONFIG: dict[str, object] = {
 # Module-level constants derived from CONFIG
 # ---------------------------------------------------------------------------
 
-_SOURCE_DIR  = Path(str(CONFIG["source_dir"]))
+def _resolve_source_dir() -> Path:
+    """Return source_dir from CONFIG, or auto-detect the most recent dated folder."""
+    import re
+    cfg = CONFIG.get("source_dir")
+    if cfg:
+        return Path(str(cfg))
+    root = Path(r"C:\Amintas\Prodes\zip")
+    dated = sorted(
+        [d for d in root.iterdir() if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", d.name)],
+        reverse=True,
+    ) if root.exists() else []
+    if dated:
+        print(f"  [config] source_dir auto-detected: {dated[0]}")
+        return dated[0]
+    return root   # fallback to root; main() will exit if no ZIPs found
+
+
+_SOURCE_DIR  = _resolve_source_dir()
 _DEST_DIR    = Path(str(CONFIG["dest_dir"]))
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
 _RASTER_EXT  = frozenset({".tif", ".tiff"})

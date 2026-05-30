@@ -30,6 +30,9 @@ __all__: list[str] = []
 import importlib.util
 import subprocess
 import sys
+from pathlib import Path
+
+HERE = Path(__file__).parent
 
 # ---------------------------------------------------------------------------
 # Dependency bootstrap
@@ -100,7 +103,7 @@ import numpy as np               # noqa: E402
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, object] = {
-    "output_path": "amazon_deforestation_norad.png",
+    "output_path": HERE / "amazon_deforestation_norad.png",
     "dpi":         220,
 }
 

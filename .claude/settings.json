@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Remove-Item \"c:\\\\Amintas\\\\Prodes\\\\scripts\\\\03_convert_tiled_vectors_rasters.py\" -Confirm:$false)",
+      "Bash(git rm *)",
+      "Bash(git commit -m ' *)",
+      "PowerShell(Move-Item \"c:\\\\Amintas\\\\Prodes\\\\scripts\\\\04_deforestation_chart.py\" \"c:\\\\Amintas\\\\Prodes\\\\scripts\\\\03_deforestation_chart.py\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(uv pip *)",
+      "Bash(pip install *)",
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Read(//tmp/vector-to-geoparquet/**)",
+      "PowerShell(pip install \"https://github.com/abrandaojr/vector-to-geoparquet/archive/refs/heads/main.zip\" 2>&1)",
+      "PowerShell(& \"C:\\\\Amintas\\\\Prodes\\\\scripts\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install lxml 2>&1)"
+    ]
+  }
+}

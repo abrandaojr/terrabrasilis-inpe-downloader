@@ -298,31 +298,62 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
     chrome_path = _find_chrome()
     if not chrome_path:
         print(
-            "  [skip] Selenium fallback requires Google Chrome.\n"
-            "         Install Chrome and re-run, or download files manually."
+            "  [skip] Selenium fallback requires Chrome or Brave Browser.\n"
+            "         Install one and re-run, or download files manually."
         )
         return []
 
-    _bootstrap(
-        ("selenium",          "selenium"),
-        ("webdriver-manager", "webdriver_manager"),
-    )
+    # Only selenium is needed — selenium-manager (built into Selenium 4.6+)
+    # downloads and manages the matching ChromeDriver automatically.
+    # webdriver-manager is NOT used: it spawns blocking PowerShell calls
+    # on Windows that can hang indefinitely when detecting browser version.
+    _bootstrap(("selenium", "selenium"))
+
+    import threading
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
 
     print(f"[scrape] Dynamic rendering (Selenium) at: {url}")
-    driver = None
-    try:
-        opts = Options()
-        opts.binary_location = chrome_path
-        for arg in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage"):
-            opts.add_argument(arg)
-        opts.add_argument(f"user-agent={HEADERS['User-Agent']}")
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()), options=opts
+
+    opts = Options()
+    opts.binary_location = str(chrome_path)
+    for arg in (
+        "--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+        "--disable-gpu", "--no-first-run",
+    ):
+        opts.add_argument(arg)
+    opts.add_argument(f"user-agent={HEADERS['User-Agent']}")
+
+    # Run driver initialisation in a daemon thread so that a hang (e.g.
+    # selenium-manager network timeout) never blocks the pipeline forever.
+    _slot: dict = {}
+
+    def _init_driver() -> None:
+        try:
+            _slot["driver"] = webdriver.Chrome(options=opts)
+        except Exception as exc:
+            _slot["error"] = exc
+
+    t = threading.Thread(target=_init_driver, daemon=True)
+    t.start()
+    t.join(timeout=60)
+
+    if t.is_alive():
+        print(
+            "  [skip] ChromeDriver init timed out after 60 s.\n"
+            "         Opening the download page in your browser instead."
         )
+        import webbrowser
+        webbrowser.open(url)
+        return []
+
+    if "error" in _slot:
+        exc = _slot["error"]
+        print(f"  [skip] ChromeDriver init failed: {type(exc).__name__}: {exc}")
+        return []
+
+    driver = _slot["driver"]
+    try:
         driver.get(url)
         print(f"    Waiting {wait_seconds}s for JS to render...")
         time.sleep(wait_seconds)
@@ -332,14 +363,13 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
     except KeyboardInterrupt:
         raise
     except Exception as exc:
-        print(f"  [skip] Selenium failed: {type(exc).__name__}: {exc}")
+        print(f"  [skip] Selenium navigation failed: {type(exc).__name__}: {exc}")
         return []
     finally:
-        if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 def _expand_all_menus(driver) -> None:

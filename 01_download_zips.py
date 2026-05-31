@@ -903,7 +903,12 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print(f"\n{SEP}\n  STEP 1 OF 4  --  Scraping TerraBrasilis\n{SEP}")
 
-    zips = fetch_static(BASE_URL)
+    try:
+        zips = fetch_static(BASE_URL)
+    except Exception as exc:
+        print(f"  -> Static request failed: {exc}")
+        zips = []
+
     if zips:
         print(f"  -> {len(zips)} ZIP(s) found via static request.")
     else:
@@ -917,19 +922,32 @@ def main() -> None:
         print(f"  -> {len(zips)} ZIP(s) found via Selenium.")
 
     if not zips:
-        print(
-            "  No ZIP files found via scraping.\n"
-            "  Opening the download page in your default browser..."
-        )
-        import webbrowser
-        webbrowser.open(BASE_URL)
-        print(
-            f"  URL: {BASE_URL}\n"
-            "  Download the files manually and place them under:\n"
-            f"  {ROOT_FOLDER}\n"
-            "  Then resume the pipeline with:  python 00_pipeline.py --from 2"
-        )
-        return
+        # Check whether files are already present locally before giving up
+        existing_count = sum(
+            1 for z in ROOT_FOLDER.rglob("*.zip")
+            if z.stat().st_size > 0 and not z.name.endswith(".tmp")
+        ) if ROOT_FOLDER.exists() else 0
+
+        if existing_count:
+            print(
+                f"\n  Scraping unavailable, but {existing_count} ZIP(s) already present "
+                f"under {ROOT_FOLDER}.\n"
+                "  No download needed — continuing pipeline with existing files."
+            )
+            return   # exit 0 — pipeline proceeds to step 2
+        else:
+            print(
+                "  No ZIP files found via scraping and none present locally.\n"
+                "  Opening the download page in your default browser..."
+            )
+            import webbrowser
+            webbrowser.open(BASE_URL)
+            print(
+                f"  URL: {BASE_URL}\n"
+                f"  Download files manually to: {ROOT_FOLDER}\n"
+                "  Then resume with:  python 00_pipeline.py --from 2"
+            )
+            return   # exit 0 — user needs to download manually
 
     zips = resolve_unique_filenames(zips)
 

@@ -130,9 +130,11 @@ from tqdm import tqdm  # noqa: E402
 
 CONFIG: dict[str, object] = {
     # ---- I/O ---------------------------------------------------------------
-    # Set source_dir to None to auto-detect the most recent dated download folder.
-    "source_dir": None,   # e.g. r"C:\Amintas\Prodes\zip\2026-05-07"
-    "dest_dir":   r"C:\Amintas\Prodes\geoparquet",
+    # Root directory that contains all dated download sub-folders.
+    # All *.zip files found recursively are used; when the same filename
+    # appears in multiple dated folders, the most recently modified copy wins.
+    "zip_root":  r"C:\Amintas\Prodes\zip",
+    "dest_dir":  r"C:\Amintas\Prodes\geoparquet",
 
     # ---- Extraction --------------------------------------------------------
     # Set to a path to keep extracted files between runs (faster re-runs).
@@ -169,25 +171,26 @@ CONFIG: dict[str, object] = {
 # Module-level constants derived from CONFIG
 # ---------------------------------------------------------------------------
 
-def _resolve_source_dir() -> Path:
-    """Return source_dir from CONFIG, or auto-detect the most recent dated folder."""
-    import re
-    cfg = CONFIG.get("source_dir")
-    if cfg:
-        return Path(str(cfg))
-    root = Path(r"C:\Amintas\Prodes\zip")
-    dated = sorted(
-        [d for d in root.iterdir() if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", d.name)],
-        reverse=True,
-    ) if root.exists() else []
-    if dated:
-        print(f"  [config] source_dir auto-detected: {dated[0]}")
-        return dated[0]
-    return root   # fallback to root; main() will exit if no ZIPs found
+def _latest_zips(zip_root: Path) -> list[Path]:
+    """
+    Scan zip_root recursively and return the most up-to-date copy of each ZIP.
+
+    When the same filename exists in multiple sub-folders (e.g. different
+    dated download runs), only the most recently modified file is kept.
+    The returned list is sorted for deterministic processing order.
+    """
+    best: dict[str, Path] = {}   # filename → most recent path
+    for zp in zip_root.rglob("*.zip"):
+        name = zp.name
+        if name not in best or zp.stat().st_mtime > best[name].stat().st_mtime:
+            best[name] = zp
+    return sorted(best.values())
 
 
-_SOURCE_DIR  = _resolve_source_dir()
+_ZIP_ROOT    = Path(str(CONFIG["zip_root"]))
 _DEST_DIR    = Path(str(CONFIG["dest_dir"]))
+# _SOURCE_DIR kept as alias so build_manifest (which uses it for rel_dir) works
+_SOURCE_DIR  = _ZIP_ROOT
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
 _RASTER_EXT  = frozenset({".tif", ".tiff"})
 SEP          = "=" * 65
@@ -601,8 +604,8 @@ def main() -> None:
     print(f"  PRODES → GeoParquet + COG  v{__version__}  |  {now}")
     print(f"{SEP}")
 
-    if not _SOURCE_DIR.exists():
-        sys.exit(f"[FATAL] source directory not found: {_SOURCE_DIR}")
+    if not _ZIP_ROOT.exists():
+        sys.exit(f"[FATAL] ZIP root not found: {_ZIP_ROOT}")
 
     # 1. Existing outputs
     existing: set[Path] = set()
@@ -615,9 +618,9 @@ def main() -> None:
         }
     print(f"\n  [1/3] existing outputs : {len(existing)}")
 
-    # 2. Build manifest
-    zip_files = sorted(_SOURCE_DIR.rglob("*.zip"))
-    print(f"  [2/3] scanning {len(zip_files)} zip archive(s) ...")
+    # 2. Discover ZIPs — all sub-folders of zip_root, most recent copy per filename
+    zip_files = _latest_zips(_ZIP_ROOT)
+    print(f"  [2/3] scanning {len(zip_files)} zip archive(s) from {_ZIP_ROOT} ...")
     if not zip_files:
         sys.exit("  No zip archives found — nothing to do.")
 

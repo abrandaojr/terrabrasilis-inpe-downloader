@@ -354,6 +354,12 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
 
     driver = _slot["driver"]
     try:
+        # Hard timeout so driver.get() never hangs indefinitely.
+        # After 30 s Selenium raises TimeoutException (subclass of Exception),
+        # which is caught below — no Ctrl+C needed.
+        driver.set_page_load_timeout(30)
+        driver.set_script_timeout(15)
+
         driver.get(url)
         print(f"    Waiting {wait_seconds}s for JS to render...")
         time.sleep(wait_seconds)
@@ -362,8 +368,13 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
         return _extract_zip_links(BeautifulSoup(driver.page_source, _HTML_PARSER), base_url=url)
     except KeyboardInterrupt:
         raise
-    except Exception as exc:
-        print(f"  [skip] Selenium navigation failed: {type(exc).__name__}: {exc}")
+    except BaseException as exc:
+        # Catch BaseException (not just Exception) so that internal errors
+        # like ConnectionResetError wrapped in chained exceptions are handled
+        # gracefully without leaking a traceback.
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        print(f"  [skip] Selenium failed: {type(exc).__name__}: {exc}")
         return []
     finally:
         try:

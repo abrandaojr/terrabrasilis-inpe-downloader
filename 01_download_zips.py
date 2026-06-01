@@ -914,6 +914,12 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     print(f"\n{SEP}\n  STEP 1 OF 4  --  Scraping TerraBrasilis\n{SEP}")
 
+    def _count_local_zips() -> int:
+        return sum(
+            1 for z in ROOT_FOLDER.rglob("*.zip")
+            if z.stat().st_size > 0 and not z.name.endswith(".tmp")
+        ) if ROOT_FOLDER.exists() else 0
+
     try:
         zips = fetch_static(BASE_URL)
     except Exception as exc:
@@ -924,13 +930,25 @@ def main() -> None:
         print(f"  -> {len(zips)} ZIP(s) found via static request.")
     else:
         print("  -> No ZIPs found via static request (JS rendering required).")
-        print("  Trying Selenium...")
-        try:
-            zips = fetch_dynamic(BASE_URL)
-        except Exception as exc:
-            print(f"  -> Selenium error: {exc}")
-            zips = []
-        print(f"  -> {len(zips)} ZIP(s) found via Selenium.")
+
+        # Only invoke Selenium when there are no local files to fall back on.
+        # If files already exist, Selenium is skipped entirely — preventing
+        # the ConnectionResetError / hang that occurs on the first cold run.
+        local_count = _count_local_zips()
+        if local_count:
+            print(
+                f"  -> {local_count} ZIP(s) already present under {ROOT_FOLDER}.\n"
+                "  Skipping Selenium — existing files are sufficient."
+            )
+            return   # exit 0, pipeline continues to step 2
+        else:
+            print("  No local files found. Trying Selenium...")
+            try:
+                zips = fetch_dynamic(BASE_URL)
+            except Exception as exc:
+                print(f"  -> Selenium error: {exc}")
+                zips = []
+            print(f"  -> {len(zips)} ZIP(s) found via Selenium.")
 
     if not zips:
         # Check whether files are already present locally before giving up

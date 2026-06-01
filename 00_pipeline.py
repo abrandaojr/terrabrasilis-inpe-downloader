@@ -6,7 +6,9 @@ Orchestrates the full PRODES data pipeline:
   Step 1 — 01_download_zips.py          Download ZIPs from TerraBrasilis
   Step 2 — 02_convert_to_geoparquet.py  Convert vectors → GeoParquet, rasters → COG
   Step 3 — 03_deforestation_chart.py    Generate deforestation rate chart
-  Step 4 — 04_generate_presentation.py  Generate bilingual press PowerPoint
+  Step 4 — 04_generate_presentation.py  Generate bilingual press PowerPoint (+maps)
+  Step 5 — 05_organize_geoparquet.py    Organize GeoParquet → catalog + _organized/
+  Step 6 — 06_export_tables.py          Export all tables to Excel → tables/
 
 Usage
 -----
@@ -45,7 +47,9 @@ STEPS: list[tuple[int, str, str]] = [
     (1, "01_download_zips.py",         "Download ZIPs from TerraBrasilis"),
     (2, "02_convert_to_geoparquet.py", "Convert vectors → GeoParquet  |  rasters → COG"),
     (3, "03_deforestation_chart.py",   "Generate deforestation rate chart"),
-    (4, "04_generate_presentation.py", "Generate bilingual press PowerPoint"),
+    (4, "04_generate_presentation.py", "Generate bilingual press PowerPoint  (+maps)"),
+    (5, "05_organize_geoparquet.py",   "Organize GeoParquet folder  →  catalog + _organized/"),
+    (6, "06_export_tables.py",         "Export all tables to Excel  →  tables/"),
 ]
 
 SEP  = "=" * 65

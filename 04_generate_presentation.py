@@ -111,13 +111,18 @@ _bootstrap(
     ("python-pptx", "pptx"),
     ("duckdb",      "duckdb"),
     ("pyarrow",     "pyarrow"),
+    ("geopandas",   "geopandas"),
+    ("pyogrio",     "pyogrio"),
 )
 
-import matplotlib.pyplot as plt       # noqa: E402
-import numpy as np                    # noqa: E402
-from pptx import Presentation         # noqa: E402
-from pptx.util import Pt              # noqa: E402
-from pptx.dml.color import RGBColor   # noqa: E402
+import matplotlib.pyplot as plt            # noqa: E402
+import matplotlib.patches as mpatches    # noqa: E402
+import numpy as np                       # noqa: E402
+import pandas as pd                      # noqa: E402
+import geopandas as gpd                  # noqa: E402
+from pptx import Presentation            # noqa: E402
+from pptx.util import Pt                 # noqa: E402
+from pptx.dml.color import RGBColor      # noqa: E402
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
@@ -1221,12 +1226,399 @@ def s_takeaways(prs: Presentation, lang: str) -> None:
 # SLIDE SEQUENCE
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# MAP HELPERS
+# ---------------------------------------------------------------------------
+
+# Color ramps for NYT/Economist map style
+_MAP_BG      = "#F8F5F0"    # off-white parchment background
+_MAP_OCEAN   = "#D6E8F0"    # muted blue for ocean/water
+_MAP_COUNTRY = "#E8E4DF"    # light gray for neighboring countries
+_MAP_BORDER  = "#BBBBBB"    # thin country borders
+_MAP_STATE   = "#CCCCCC"    # state borders
+_MAP_AMAZON  = "#E0ECD8"    # light green — Amazon biome base
+
+# Year → color for deforestation trend (older = lighter, recent = darker red)
+_DEFOR_CMAP = "YlOrRd"
+
+
+def _find_border_file(gpq_dir: Path, keyword: str) -> Path | None:
+    """Search _organized or raw geoparquet for a border/boundary parquet."""
+    for pf in sorted(gpq_dir.rglob("*.parquet")):
+        if keyword.lower() in pf.name.lower():
+            return pf
+    return None
+
+
+def _load_geodf(files: list[Path], columns: list[str] | None = None,
+                year_filter: int | None = None,
+                year_col: str = "year") -> gpd.GeoDataFrame | None:
+    """Load parquet files into a GeoDataFrame, optionally filtered by year."""
+    dfs = []
+    for f in files[:8]:   # limit files to keep memory manageable
+        try:
+            gdf = gpd.read_parquet(str(f), columns=columns)
+            if year_filter is not None and year_col in gdf.columns:
+                gdf = gdf[gdf[year_col].astype(int) == year_filter]
+            if not gdf.empty:
+                dfs.append(gdf)
+        except Exception:
+            continue
+    if not dfs:
+        return None
+    try:
+        return gpd.GeoDataFrame(
+            pd.concat(dfs, ignore_index=True),
+            crs=dfs[0].crs,
+        )
+    except Exception:
+        return dfs[0] if dfs else None
+
+
+def _apply_map_style(fig, ax) -> None:
+    """Apply publication-quality map styling."""
+    fig.patch.set_facecolor(_MAP_BG)
+    ax.set_facecolor(_MAP_OCEAN)
+    ax.set_axis_off()
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def _map_source(ax, text: str) -> None:
+    ax.text(0.01, 0.01, text, transform=ax.transAxes,
+            fontsize=6.5, color="#999999", style="italic",
+            va="bottom", ha="left")
+
+
+# ── MAP 1: Amazon deforestation polygons colored by year ─────────────────
+
+def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
+    """
+    Map showing Amazon deforestation polygons colored by year (2015-current).
+    NYT style: off-white background, YlOrRd color ramp, clean annotation.
+    Falls back to a styled infographic if geodata unavailable.
+    """
+    gpq_dir = (
+        Path(str(CONFIG["geoparquet_dir"])) if CONFIG.get("geoparquet_dir")
+        else Path(r"C:\Amintas\Prodes\geoparquet")
+    )
+
+    # Try to load deforestation polygons
+    amazon_files = [
+        pf for pf in sorted(gpq_dir.rglob("*.parquet"))
+        if any(k in pf.name.lower() for k in ("accumulated_deforestation", "desmatamento"))
+        and "border" not in pf.name.lower()
+        and any(p in pf.parts for p in ("Amazon Biome", "Legal Amazon"))
+    ]
+
+    # Try to load biome/border for context
+    border_file = _find_border_file(gpq_dir, "amazon_biome_border")
+
+    import pandas as pd
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.0))
+    _apply_map_style(fig, ax)
+
+    drawn_map = False
+
+    if border_file:
+        try:
+            border = gpd.read_parquet(str(border_file))
+            if not border.empty:
+                border = border.to_crs("EPSG:4326") if border.crs else border
+                border.plot(ax=ax, color=_MAP_AMAZON, edgecolor=_MAP_BORDER,
+                            linewidth=0.5, zorder=1)
+                drawn_map = True
+        except Exception:
+            pass
+
+    current_year = STATS.get("current_year", 2025)
+    years_to_show = list(range(max(2015, current_year - 9), current_year + 1))
+
+    if amazon_files:
+        try:
+            dfs = []
+            for f in amazon_files[:4]:
+                gdf = gpd.read_parquet(str(f))
+                if "year" in gdf.columns and "geometry" in gdf.columns:
+                    gdf = gdf[gdf["year"].astype(int).isin(years_to_show)]
+                    if not gdf.empty:
+                        dfs.append(gdf[["year", "geometry"]])
+            if dfs:
+                combined = gpd.GeoDataFrame(
+                    pd.concat(dfs, ignore_index=True),
+                    crs=dfs[0].crs,
+                )
+                if combined.crs and combined.crs.to_epsg() != 4326:
+                    combined = combined.to_crs("EPSG:4326")
+                combined["year"] = combined["year"].astype(int)
+                combined.plot(ax=ax, column="year",
+                              cmap=_DEFOR_CMAP,
+                              vmin=min(years_to_show),
+                              vmax=max(years_to_show),
+                              alpha=0.85, linewidth=0, zorder=2)
+                drawn_map = True
+
+                # Colorbar
+                import matplotlib.cm as cm
+                import matplotlib.colors as mcolors
+                norm    = mcolors.Normalize(vmin=min(years_to_show), vmax=max(years_to_show))
+                sm      = cm.ScalarMappable(cmap=_DEFOR_CMAP, norm=norm)
+                sm.set_array([])
+                cbar = fig.colorbar(sm, ax=ax, orientation="horizontal",
+                                    fraction=0.04, pad=0.01, shrink=0.6)
+                cbar.set_label("Ano de detecção" if lang == "pt" else "Year detected",
+                               fontsize=8, color="#555555")
+                cbar.ax.tick_params(labelsize=7, color="#555555")
+                for spine in cbar.ax.spines.values():
+                    spine.set_visible(False)
+        except Exception:
+            pass
+
+    if not drawn_map:
+        # Fallback: styled text placeholder
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.text(0.5, 0.6, "🗺", ha="center", va="center",
+                fontsize=48, color="#CCCCCC", transform=ax.transAxes)
+        msg = ("Mapa indisponível — execute o script 02\npara gerar os dados GeoParquet"
+               if lang == "pt" else
+               "Map unavailable — run script 02\nto generate GeoParquet data")
+        ax.text(0.5, 0.35, msg, ha="center", va="center", fontsize=9,
+                color="#AAAAAA", transform=ax.transAxes, style="italic")
+    else:
+        # Annotation: current year km²
+        current_km2 = STATS.get("current_km2", 0)
+        txt = (f"{current_km2:,.0f} km²\ndesmatados em {current_year}"
+               if lang == "pt" else
+               f"{current_km2:,.0f} km²\ndeforested in {current_year}")
+        ax.text(0.97, 0.97, txt, transform=ax.transAxes,
+                ha="right", va="top", fontsize=9, color="#C0392B",
+                fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#CCCCCC",
+                          alpha=0.9))
+
+    src = ("Fonte: INPE/PRODES" if lang == "pt" else "Source: INPE/PRODES")
+    _map_source(ax, src)
+
+    plt.tight_layout(pad=0.1)
+    return _buf(fig)
+
+
+# ── MAP 2: Brazil biomes colored by remaining forest cover ────────────────
+
+def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
+    """
+    Map of Brazil biomes colored by remaining native vegetation cover.
+    Economist style: muted palette, direct labels, source note.
+    Falls back to a styled bar visual if border data unavailable.
+    """
+    gpq_dir = (
+        Path(str(CONFIG["geoparquet_dir"])) if CONFIG.get("geoparquet_dir")
+        else Path(r"C:\Amintas\Prodes\geoparquet")
+    )
+
+    # Forest cover reference (MapBiomas)
+    cover_data = _COVER_PCT[lang]  # [(biome_name, pct), ...]
+
+    import matplotlib.colors as mcolors
+    import matplotlib.cm as cm
+    import pandas as pd
+
+    # Color scale: red (<40%) → orange (<65%) → green (>65%)
+    _COV_CMAP = mcolors.LinearSegmentedColormap.from_list(
+        "cover", ["#C0392B", "#E67E22", "#27AE60"], N=256
+    )
+    norm = mcolors.Normalize(vmin=0, vmax=100)
+
+    # Keyword map: biome display name → search keyword for border file
+    biome_border_keywords = {
+        "Amazon Biome":   "amazon_biome_border",
+        "Legal Amazon":   "amazon_biome_border",
+        "Cerrado":        "cerrado",
+        "Caatinga":       "caatinga",
+        "Pantanal":       "pantanal",
+        "Mata Atlantica": "mata_atlantica",
+        "Pampa":          "pampa",
+    }
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.0))
+    _apply_map_style(fig, ax)
+
+    drawn_any = False
+    patches_legend = []
+
+    for (biome_label, pct) in sorted(cover_data, key=lambda x: x[1], reverse=True):
+        color = mcolors.to_hex(_COV_CMAP(norm(pct)))
+
+        # Find border parquet
+        border_key = next(
+            (k for k, v in biome_border_keywords.items()
+             if biome_label.lower() in k.lower()
+             or k.lower() in biome_label.lower()),
+            None
+        )
+        border_file = _find_border_file(gpq_dir, border_key) if border_key else None
+
+        if border_file:
+            try:
+                gdf = gpd.read_parquet(str(border_file))
+                if not gdf.empty:
+                    if gdf.crs and gdf.crs.to_epsg() != 4326:
+                        gdf = gdf.to_crs("EPSG:4326")
+                    gdf.plot(ax=ax, color=color, edgecolor="#FFFFFF",
+                             linewidth=0.6, alpha=0.9, zorder=2)
+                    drawn_any = True
+
+                    # Centroid label
+                    try:
+                        cx = gdf.geometry.unary_union.centroid.x
+                        cy = gdf.geometry.unary_union.centroid.y
+                        short = biome_label.split()[0]  # first word
+                        ax.text(cx, cy, f"{short}\n{pct:.0f}%",
+                                ha="center", va="center", fontsize=6.5,
+                                color="white" if pct < 50 else "#333333",
+                                fontweight="bold", zorder=5)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        pat = mpatches.Patch(color=color, label=f"{biome_label}  {pct:.0f}%")
+        patches_legend.append(pat)
+
+    if not drawn_any:
+        # Fallback: horizontal bar chart styled as a map legend
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.set_facecolor(_MAP_BG)
+        title = ("Cobertura Vegetal Remanescente por Bioma (%)"
+                 if lang == "pt" else "Remaining Vegetation Cover by Biome (%)")
+        ax.text(0.5, 0.95, title, ha="center", va="top", fontsize=9,
+                fontweight="bold", color="#111111", transform=ax.transAxes)
+
+        sorted_cover = sorted(cover_data, key=lambda x: x[1])
+        bar_h = 0.10
+        for i, (bname, pct) in enumerate(sorted_cover):
+            y = 0.12 + i * 0.13
+            color = mcolors.to_hex(_COV_CMAP(norm(pct)))
+            bar = plt.Rectangle((0.08, y), pct / 100 * 0.60, bar_h,
+                                 color=color, transform=ax.transAxes, zorder=2)
+            ax.add_patch(bar)
+            ax.text(0.07, y + bar_h / 2, bname, ha="right", va="center",
+                    fontsize=8, color="#333333", transform=ax.transAxes)
+            ax.text(0.08 + pct / 100 * 0.60 + 0.01, y + bar_h / 2,
+                    f"{pct:.0f}%", ha="left", va="center", fontsize=8,
+                    fontweight="bold", color=color, transform=ax.transAxes)
+        drawn_any = True
+
+    # Colorbar
+    if drawn_any:
+        sm = cm.ScalarMappable(cmap=_COV_CMAP, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, orientation="horizontal",
+                            fraction=0.03, pad=0.01, shrink=0.55)
+        lbl = "Cobertura remanescente (%)" if lang == "pt" else "Remaining cover (%)"
+        cbar.set_label(lbl, fontsize=8, color="#555555")
+        cbar.ax.tick_params(labelsize=7, color="#555555")
+        for spine in cbar.ax.spines.values():
+            spine.set_visible(False)
+
+    src = ("Fonte: MapBiomas 2023" if lang == "pt" else "Source: MapBiomas 2023")
+    _map_source(ax, src)
+
+    plt.tight_layout(pad=0.1)
+    return _buf(fig)
+
+
+# ── Map slide builders ────────────────────────────────────────────────────
+
+def s_map_amazon(prs: Presentation, lang: str) -> None:
+    """Map slide: Amazon deforestation polygons colored by detection year."""
+    sl  = _blank(prs)
+    buf = chart_map_amazon_deforestation(lang)
+    lc  = _LANG_COLOR[lang]
+    cur_yr  = STATS.get("current_year", "")
+    cur_km2 = STATS.get("current_km2", 0)
+    pct     = STATS.get("pct_decline", 0)
+
+    _lang_bar(sl, lang)
+    _section(sl, COPY["sec_amazon"][lang], lang)
+    _divider(sl, lang)
+
+    headline_pt = (f"Onde estão as {_num(cur_km2,'pt')} km² desmatadas em {cur_yr}?")
+    headline_en = (f"Where are the {_num(cur_km2,'en')} km² deforested in {cur_yr}?")
+    _headline(sl, headline_pt if lang == "pt" else headline_en)
+
+    sub_pt = f"Polígonos de desmatamento na Amazônia Legal · 2015–{cur_yr} · cores por ano de detecção"
+    sub_en = f"Deforestation polygons in Brazil's Legal Amazon · 2015–{cur_yr} · colored by detection year"
+    _sub(sl, sub_pt if lang == "pt" else sub_en)
+
+    # Map on left (60% width), stat panel on right
+    _pic(sl, buf, 0.2, 1.6, 6.0)
+
+    # Right panel: key stats
+    rx = 6.4
+    _rect(sl, rx, 1.62, 3.35, 3.7, "#F8F5F0", "#E0E0E0")
+
+    stats_items_pt = [
+        (f"{_num(cur_km2,'pt')} km²", f"desmatados em {cur_yr}"),
+        (f"−{pct:.0f}%",             f"desde o pico de {STATS.get('peak_year','')}"),
+        (f"{_num(STATS.get('target_2028',4000),'pt')} km²", "meta para 2028"),
+    ]
+    stats_items_en = [
+        (f"{_num(cur_km2,'en')} km²", f"deforested in {cur_yr}"),
+        (f"−{pct:.0f}%",             f"since {STATS.get('peak_year','')} peak"),
+        (f"{_num(STATS.get('target_2028',4000),'en')} km²", "2028 target"),
+    ]
+    items = stats_items_pt if lang == "pt" else stats_items_en
+
+    for i, (num, lbl) in enumerate(items):
+        y = 1.75 + i * 1.15
+        _tb(sl, num, rx + 0.2, y,       3.0, 0.55,
+            size=22, bold=True, color=C_RED if i == 0 else (C_GREEN if i == 2 else C_BLUE))
+        _tb(sl, lbl, rx + 0.2, y + 0.52, 3.0, 0.42, size=9, color=C_MED)
+
+    _src(sl, COPY["src_prodes"][lang])
+
+
+def s_map_biomes(prs: Presentation, lang: str) -> None:
+    """Map slide: Brazil biomes colored by remaining forest cover (MapBiomas)."""
+    sl  = _blank(prs)
+    buf = chart_map_biomes_coverage(lang)
+    _lang_bar(sl, lang)
+    _section(sl, COPY["sec_cover"][lang], lang)
+    _divider(sl, lang)
+    _headline(sl, COPY["cover_headline"][lang])
+    _sub(sl, COPY["cover_sub_text"][lang])
+
+    # Map on left, legend on right
+    _pic(sl, buf, 0.2, 1.6, 6.2)
+
+    # Right: compact cover table
+    rx = 6.55
+    _rect(sl, rx, 1.62, 3.2, 3.7, "#F8F5F0", "#E0E0E0")
+
+    cover = sorted(STATS["cover_pct"][lang].items(), key=lambda x: x[1])
+    _tb(sl, ("Cobertura\nremanescente" if lang == "pt" else "Remaining\ncover"),
+        rx + 0.15, 1.68, 2.9, 0.6, size=8, bold=True, color=C_MED)
+
+    for i, (biome, pct) in enumerate(cover):
+        y = 2.28 + i * 0.56
+        color = C_RED if pct < 40 else (C_ORANGE if pct < 65 else C_GREEN)
+        _tb(sl, biome[:18], rx + 0.15, y, 2.0, 0.45, size=8.5, color=C_DARK)
+        _tb(sl, f"{pct:.0f}%", rx + 2.3, y, 0.7, 0.45,
+            size=9, bold=True, color=color)
+
+    _src(sl, COPY["src_mapbiomas"][lang])
+
+
 BUILDERS = [
     s_cover,
     s_lead_stat,
     s_amazon_historical,
+    s_map_amazon,         # map: deforestation polygons colored by year
     s_by_biome,
     s_cerrado_spotlight,
+    s_map_biomes,         # map: biomes colored by remaining forest cover
     s_forest_cover,
     s_target_2028,
     s_international,

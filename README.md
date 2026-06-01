@@ -21,11 +21,11 @@ TerraBrasilis website
         │  Vectors (SHP/GPKG) → GeoParquet (Hilbert sort, zstd)
         │  Rasters (TIF/TIFF) → COG GeoTIFF (ESRI:102033, zonal-stats optimized)
         │
-        ▼  (analysis-ready files)
+        ▼  (analysis-ready GeoParquet files)
 03_deforestation_chart.py    ← annual deforestation rate chart (PNG)
-        │
-        ▼
-04_generate_presentation.py  ← bilingual press PowerPoint (PT-BR + EN-US)
+04_generate_presentation.py  ← bilingual press PowerPoint with maps (PT-BR + EN-US)
+05_organize_geoparquet.py    ← catalog + clean _organized/ folder structure
+06_export_tables.py          ← all tables exported to Excel (PT-BR + EN-US)
 ```
 
 Run the full pipeline with a single command:

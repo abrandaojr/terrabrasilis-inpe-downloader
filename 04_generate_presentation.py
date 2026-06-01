@@ -308,16 +308,40 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
     Scan GeoParquet files and compute PRODES statistics on the fly.
     Returns a dict with keys: amazon_km2, biomes_km2_pt, biomes_km2_en, biome_year.
     Raises RuntimeError if no usable data found.
+
+    The GeoParquet directory structure produced by script 02 is:
+        <geoparquet_dir>/<date_or_biome>/.../<biome_name>/<category>/<zip>/<layer>.parquet
+    The biome name is detected by matching parts against _BIOME_TO_PT.
+    The category (e.g. "Yearly_deforestation") is the part immediately after.
+    This is robust to any number of date-folder prefixes.
     """
-    # Group parquet files by top-level biome directory + yearly category
+    # Diagnostic: print everything found for easier debugging
+    all_parquets = sorted(geoparquet_dir.rglob("*.parquet"))
+    if not all_parquets:
+        raise RuntimeError(
+            "No parquet files found at all in:\n"
+            f"  {geoparquet_dir}\n"
+            "Run  python 02_convert_to_geoparquet.py  first to convert ZIPs."
+        )
+
+    print(f"  [data] Total parquet files found: {len(all_parquets)}")
+
+    # Group parquet files by biome name + require a yearly-deforestation category.
+    # Scan every path component: find the first part that matches a known biome name,
+    # then treat the next part as the category.
     biome_files: dict[str, list[Path]] = {}
-    for pf in sorted(geoparquet_dir.rglob("*.parquet")):
+    for pf in all_parquets:
         try:
             parts = pf.relative_to(geoparquet_dir).parts
-            if len(parts) < 2:
+            biome_dir = None
+            category  = ""
+            for i, part in enumerate(parts[:-1]):   # skip filename
+                if part in _BIOME_TO_PT:
+                    biome_dir = part
+                    category  = parts[i + 1] if i + 1 < len(parts) - 1 else ""
+                    break
+            if not biome_dir:
                 continue
-            biome_dir = parts[0]
-            category  = parts[1] if len(parts) > 1 else ""
             if not any(k in category.lower() for k in _DEFOR_KEYWORDS):
                 continue
             biome_files.setdefault(biome_dir, []).append(pf)
@@ -325,10 +349,16 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
             continue
 
     if not biome_files:
+        # Print a sample of paths found so the user can debug the structure
+        sample = "\n    ".join(
+            str(p.relative_to(geoparquet_dir)) for p in all_parquets[:8]
+        )
         raise RuntimeError(
-            "No yearly deforestation parquet files found in:\n"
-            f"  {geoparquet_dir}\n"
-            "Run  python 02_convert_to_geoparquet.py  first."
+            "Parquet files exist but none matched a known biome + yearly category.\n"
+            f"  directory: {geoparquet_dir}\n"
+            f"  sample paths:\n    {sample}\n"
+            f"  known biome names: {sorted(_BIOME_TO_PT)}\n"
+            f"  category keywords: {_DEFOR_KEYWORDS}"
         )
 
     print(f"  [data] Biome folders found: {sorted(biome_files)}")

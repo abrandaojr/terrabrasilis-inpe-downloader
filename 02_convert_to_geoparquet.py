@@ -122,7 +122,12 @@ _bootstrap(
     ("rasterio",             "rasterio"),
 )
 
-from tqdm import tqdm  # noqa: E402
+# Import heavy packages at module level so the one-time cold-start
+# compilation happens here (expected) rather than mid-scan inside a loop.
+import numpy as np           # noqa: E402
+import geopandas as _gpd     # noqa: E402  (unused directly, but triggers geopandas init)
+import pyogrio               # noqa: E402  (used by _gpkg_layers; pre-load avoids lazy-import hang)
+from tqdm import tqdm        # noqa: E402
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
@@ -218,7 +223,6 @@ class Job(NamedTuple):
 # ---------------------------------------------------------------------------
 
 def _gpkg_layers(zip_path: Path, internal: str) -> list[str]:
-    import pyogrio
     uri = (
         f"/vsizip/{str(zip_path.resolve()).replace(chr(92), '/')}/"
         f"{internal.replace(chr(92), '/')}"
@@ -393,7 +397,6 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
     - Overviews up to ×32 let tools like rasterstats pick the right resolution
       automatically, avoiding full-res reads for coarse summary statistics.
     """
-    import numpy as np
     import rasterio
     from rasterio.crs import CRS
     from rasterio.enums import Resampling

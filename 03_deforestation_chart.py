@@ -25,18 +25,28 @@ MIT
 from __future__ import annotations
 
 __version__ = "1.0.0"
-__all__: list[str] = []
 
+# ---------------------------------------------------------------------------
+# Standard library imports
+# ---------------------------------------------------------------------------
+import importlib
 import importlib.util
+import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Local constants
+# ---------------------------------------------------------------------------
 HERE = Path(__file__).parent
+
 
 # ---------------------------------------------------------------------------
 # Dependency bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
@@ -51,9 +61,6 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     so that newly installed packages are immediately discoverable.
     Only packages that remain missing are retried with subsequent strategies.
     """
-    import importlib
-    import shutil
-
     mod_by_pip = {pip: mod for pip, mod in packages}
 
     def _still_missing(pkgs: list[str]) -> list[str]:
@@ -64,18 +71,30 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     if not missing:
         return
 
+    # Ensure uv is available if possible, as it's a preferred strategy
     if not shutil.which("uv"):
-        subprocess.call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
+                stderr=subprocess.DEVNULL,
+            )
+            importlib.invalidate_caches()  # Invalidate after uv install
+        except subprocess.CalledProcessError:
+            print("[WARNING] Failed to install 'uv'. Falling back to pip for dependencies.", file=sys.stderr)
+        except FileNotFoundError:
+            print("[WARNING] Python executable or pip not found to install 'uv'. Falling back to other strategies.", file=sys.stderr)
 
     strategies = [
         [sys.executable, "-m", "pip", "install", "--quiet"],
-        ["uv", "pip", "install", "--python", sys.executable, "--quiet"],
-        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet"],
-        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages"],
     ]
+    if shutil.which("uv"):
+        strategies.append(["uv", "pip", "install", "--python", sys.executable, "--quiet"])
+    # Fallback to `python -m uv` if `uv` executable is not on PATH but module is available
+    elif importlib.util.find_spec("uv"):
+        strategies.append([sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet"])
+
+    strategies.append([sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages"])
+
     for base in strategies:
         if not missing:
             return
@@ -89,14 +108,19 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
         sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
 
 
+# Call bootstrap to ensure dependencies are installed BEFORE importing them
 _bootstrap(
     ("matplotlib", "matplotlib"),
-    ("numpy",      "numpy"),
+    ("numpy", "numpy"),
 )
 
-from datetime import datetime     # noqa: E402
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np               # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Third-party library imports (now safe to import)
+# ---------------------------------------------------------------------------
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
@@ -104,11 +128,11 @@ import numpy as np               # noqa: E402
 
 CONFIG: dict[str, object] = {
     "output_path": HERE / "amazon_deforestation_norad.png",
-    "dpi":         220,
+    "dpi": 220,
 }
 
 SEP = "=" * 65
-DIV = "-" * 65
+# DIV is defined but not used. Removed for PEP 8.
 
 # ---------------------------------------------------------------------------
 # Data
@@ -126,23 +150,27 @@ GREEN = "#2E7D32"
 LGRAY = "#CCCCCC"
 DGRAY = "#444444"
 
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
+    """Generates and saves the Amazon deforestation chart."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  Deforestation Chart  v{__version__}  |  {now}")
     print(f"{SEP}\n")
 
-    years  = sorted(ANNUAL_KM2) + sorted(TARGETS)
-    values = [ANNUAL_KM2[y] for y in sorted(ANNUAL_KM2)] + [TARGETS[y] for y in sorted(TARGETS)]
+    years = sorted(ANNUAL_KM2) + sorted(TARGETS)
+    values = ([ANNUAL_KM2[y] for y in sorted(ANNUAL_KM2)] +
+              [TARGETS[y] for y in sorted(TARGETS)])
     colors = [LGRAY] * len(ANNUAL_KM2) + [GREEN] * len(TARGETS)
-    pos    = np.arange(len(years), dtype=float)
+    pos = np.arange(len(years), dtype=float)
 
     plt.rcParams.update({
-        "font.family":     "sans-serif",
+        "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica Neue", "DejaVu Sans"],
     })
 
@@ -165,10 +193,10 @@ def main() -> None:
 
     important = {2021, 2025, 2028}
     for i, (yr, val) in enumerate(zip(years, values)):
-        is_green  = yr in TARGETS
+        is_green = yr in TARGETS
         txt_color = GREEN if is_green else DGRAY
-        fw        = "bold" if yr in important else "normal"
-        fs        = 10.5  if yr in important else 9.0
+        fw = "bold" if yr in important else "normal"
+        fs = 10.5 if yr in important else 9.0
         ax.text(pos[i], val + 220, f"{val:,}",
                 ha="center", va="bottom",
                 fontsize=fs, color=txt_color, fontweight=fw)
@@ -195,14 +223,16 @@ def main() -> None:
     ax.text(div_x - 0.15, 15600, "Observed",
             ha="right", va="top", fontsize=9, color="#BBBBBB", style="italic")
     ax.text(div_x + 0.15, 15600, "Projected",
-            ha="left",  va="top", fontsize=9, color=GREEN,    style="italic")
+            ha="left", va="top", fontsize=9, color=GREEN, style="italic")
 
     fig.text(0.0, 1.12,
-             "Project Goal: Reduce annual deforestation in Brazil's Legal Amazon to 4,000 km² by 2028",
+             ("Project Goal: Reduce annual deforestation in Brazil's Legal Amazon to "
+              "4,000 km² by 2028"),
              fontsize=15, fontweight="bold", color="#111111",
              transform=ax.transAxes, va="top")
     fig.text(0.0, 1.058,
-             "Annual forest loss in the Brazilian Amazon (sq. km). Green bars are project targets.",
+             ("Annual forest loss in the Brazilian Amazon (sq. km). "
+              "Green bars are project targets."),
              fontsize=10, color="#888888",
              transform=ax.transAxes, va="top", linespacing=1.5)
     fig.text(0.0, -0.06,
@@ -213,10 +243,10 @@ def main() -> None:
     plt.subplots_adjust(left=0.04, right=0.94, top=0.78, bottom=0.10)
 
     output = str(CONFIG["output_path"])
-    plt.savefig(output, dpi=int(CONFIG["dpi"]), bbox_inches="tight", facecolor="white")
+    plt.savefig(output, dpi=CONFIG["dpi"], bbox_inches="tight", facecolor="white")
 
     print(f"  saved: {output}")
-    print(f"\n{SEP}\n")
+    print(f"{SEP}\n")
 
 
 if __name__ == "__main__":

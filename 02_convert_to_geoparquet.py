@@ -1,39 +1,3 @@
-"""
-02_convert_to_geoparquet.py
-===========================
-Batch-convert PRODES ZIP archives to analysis-ready formats:
-
-  Vectors (SHP / GPKG) → DuckDB-optimized GeoParquet (Hilbert sort, zstd)
-  Rasters (TIF / TIFF) → Cloud-Optimized GeoTIFF reprojetado para ESRI:102033,
-                          otimizado para zonal stats em máquinas com 64 GB RAM
-
-Pipeline
---------
-1. Scan source_dir for existing outputs (incremental — skips converted files).
-2. Inspect every .zip: collect GPKG layers, orphan SHPs, and TIFs.
-3. Cross-reference against existing outputs.
-4. Extract pending source files to a managed temp directory.
-5. Convert in parallel; clean up temp on exit or error.
-
-Configuration
--------------
-Edit the CONFIG dict below. All other symbols are implementation details.
-
-Usage
------
-    python 02_convert_to_geoparquet.py           # convert
-    python 02_convert_to_geoparquet.py --list    # list existing outputs
-
-Author
-------
-Amintas Brandão Jr. <abrandaojr@gmail.com>
-Imazon — Instituto do Homem e Meio Ambiente da Amazônia
-
-License
--------
-MIT
-"""
-
 from __future__ import annotations
 
 __version__ = "2.0.0"
@@ -56,9 +20,11 @@ from typing import NamedTuple
 logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.WARNING)
 log = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Dependency bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
@@ -114,20 +80,21 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 _bootstrap(
     ("git+https://github.com/abrandaojr/vector-to-geoparquet.git", "vector_to_geoparquet"),
     ("geopandas", "geopandas"),
-    ("pyogrio",              "pyogrio"),
-    ("pyarrow",              "pyarrow"),
-    ("shapely",              "shapely"),
-    ("numpy",                "numpy"),
-    ("tqdm",                 "tqdm"),
-    ("rasterio",             "rasterio"),
+    ("pyogrio", "pyogrio"),
+    ("pyarrow", "pyarrow"),
+    ("shapely", "shapely"),
+    ("numpy", "numpy"),
+    ("tqdm", "tqdm"),
+    ("rasterio", "rasterio"),
 )
 
 # Import heavy packages at module level so the one-time cold-start
 # compilation happens here (expected) rather than mid-scan inside a loop.
-import numpy as np           # noqa: E402
-import geopandas as _gpd     # noqa: E402  (unused directly, but triggers geopandas init)
-import pyogrio               # noqa: E402  (used by _gpkg_layers; pre-load avoids lazy-import hang)
-from tqdm import tqdm        # noqa: E402
+import numpy as np  # noqa: E402
+import geopandas as _gpd  # noqa: E402 (unused directly, but triggers geopandas init)
+import pyogrio  # noqa: E402 (used by _gpkg_layers; pre-load avoids lazy-import hang)
+from tqdm import tqdm  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
@@ -138,43 +105,41 @@ CONFIG: dict[str, object] = {
     # Root directory that contains all dated download sub-folders.
     # All *.zip files found recursively are used; when the same filename
     # appears in multiple dated folders, the most recently modified copy wins.
-    "zip_root":  r"C:\Amintas\Prodes\zip",
-    "dest_dir":  r"C:\Amintas\Prodes\geoparquet",
-
+    "zip_root": r"C:\Amintas\Prodes\zip",
+    "dest_dir": r"C:\Amintas\Prodes\geoparquet",
     # ---- Extraction --------------------------------------------------------
     # Set to a path to keep extracted files between runs (faster re-runs).
     # None = use a temporary directory that is deleted after each run.
-    "extract_dir": None,   # e.g. r"C:\Amintas\Prodes\extracted"
-
+    "extract_dir": None,  # e.g. r"C:\Amintas\Prodes\extracted"
     # ---- Parallelism -------------------------------------------------------
     "n_workers": 8,
-
     # ---- Vector GeoParquet options -----------------------------------------
-    "tile_size_m":       25_000,
-    "row_group_size":    65_536,
-    "compression":       "zstd",
+    "tile_size_m": 25_000,
+    "row_group_size": 65_536,
+    "compression": "zstd",
     "compression_level": 3,
-    "hilbert_p":         15,
-
+    "hilbert_p": 15,
     # ---- Raster COG options (optimized for zonal stats, 64 GB RAM) ---------
     # Target CRS for all rasters (equal-area — required for correct area math)
-    "raster_crs":        "ESRI:102033",
+    "raster_crs": "ESRI:102033",
     # Internal COG tile size in pixels. 512×512 is the sweet spot for
     # windowed reads in zonal stats: large enough for sequential I/O,
     # small enough for random-access queries over small polygons.
-    "cog_tile_px":       512,
+    "cog_tile_px": 512,
     # DEFLATE + predictor=2 gives the best decompress speed for float rasters
     # on CPU-bound zonal stats workloads. Switch to "ZSTD" if you need better
     # compression ratios and your GDAL supports it.
-    "raster_compress":   "DEFLATE",
+    "raster_compress": "DEFLATE",
     # Overview decimation levels. With 30 m resolution, level 32 covers
     # ~1 km — enough for national-scale visualisation without loading full res.
-    "overview_levels":   [2, 4, 8, 16, 32],
+    "overview_levels": [2, 4, 8, 16, 32],
 }
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants derived from CONFIG
 # ---------------------------------------------------------------------------
+
 
 def _latest_zips(zip_root: Path) -> list[Path]:
     """
@@ -184,7 +149,7 @@ def _latest_zips(zip_root: Path) -> list[Path]:
     dated download runs), only the most recently modified file is kept.
     The returned list is sorted for deterministic processing order.
     """
-    best: dict[str, Path] = {}   # filename → most recent path
+    best: dict[str, Path] = {}  # filename → most recent path
     for zp in zip_root.rglob("*.zip"):
         name = zp.name
         if name not in best or zp.stat().st_mtime > best[name].stat().st_mtime:
@@ -192,35 +157,39 @@ def _latest_zips(zip_root: Path) -> list[Path]:
     return sorted(best.values())
 
 
-_ZIP_ROOT    = Path(str(CONFIG["zip_root"]))
-_DEST_DIR    = Path(str(CONFIG["dest_dir"]))
+_ZIP_ROOT = Path(str(CONFIG["zip_root"]))
+_DEST_DIR = Path(str(CONFIG["dest_dir"]))
 # _SOURCE_DIR kept as alias so build_manifest (which uses it for rel_dir) works
-_SOURCE_DIR  = _ZIP_ROOT
+_SOURCE_DIR = _ZIP_ROOT
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
-_RASTER_EXT  = frozenset({".tif", ".tiff"})
-SEP          = "=" * 65
-DIV          = "-" * 65
+_RASTER_EXT = frozenset({".tif", ".tiff"})
+SEP = "=" * 65
+DIV = "-" * 65
+
 
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
+
 class Job(NamedTuple):
     """One conversion unit (a single vector layer or a raster file)."""
 
-    priority:   int
-    kind:       str          # "gpkg" | "shp" | "tif"
-    zip_path:   Path
-    rel_dir:    str
-    zip_stem:   str
-    internal:   str          # member path inside the zip
-    layer:      str | None   # GPKG layer name; None for shp / tif
-    out_path:   Path
+    priority: int
+    kind: str  # "gpkg" | "shp" | "tif"
+    zip_path: Path
+    rel_dir: str
+    zip_stem: str
+    internal: str  # member path inside the zip
+    layer: str | None  # GPKG layer name; None for shp / tif
+    out_path: Path
     local_path: Path | None
+
 
 # ---------------------------------------------------------------------------
 # Stage 1 — Inspect ZIPs → build manifest
 # ---------------------------------------------------------------------------
+
 
 def _gpkg_layers(zip_path: Path, internal: str) -> list[str]:
     uri = (
@@ -231,7 +200,8 @@ def _gpkg_layers(zip_path: Path, internal: str) -> list[str]:
         return [str(row[0]) for row in pyogrio.list_layers(uri)]
     except KeyboardInterrupt:
         raise
-    except BaseException:
+    except Exception:  # Changed from BaseException to Exception
+        log.warning(f"Failed to list layers for {zip_path.name}/{internal}", exc_info=True)
         return []
 
 
@@ -243,14 +213,14 @@ def build_manifest(zip_files: list[Path]) -> list[Job]:
     the slow pyogrio.list_layers() call for already-processed archives.
     """
     gpkg_jobs: list[Job] = []
-    shp_jobs:  list[Job] = []
-    tif_jobs:  list[Job] = []
+    shp_jobs: list[Job] = []
+    tif_jobs: list[Job] = []
     skipped = 0
 
     bar = tqdm(zip_files, desc="  scanning", unit="zip", ncols=80, leave=True)
     for zip_path in bar:
         bar.set_postfix_str(zip_path.name[:40])
-        rel_dir  = str(zip_path.parent.relative_to(_SOURCE_DIR))
+        rel_dir = str(zip_path.parent.relative_to(_SOURCE_DIR))
         zip_stem = zip_path.stem
 
         # ── Fast path: skip ZIPs whose output directory has converted files ──
@@ -266,59 +236,79 @@ def build_manifest(zip_files: list[Path]) -> list[Job]:
         try:
             names = zipfile.ZipFile(zip_path).namelist()
         except zipfile.BadZipFile:
-            tqdm.write(f"  [WARN] corrupt archive: {zip_path.name}")
+            log.warning(f"corrupt archive: {zip_path.name}")
             continue
 
         gpkg_stems: set[str] = set()
 
         # GPKG layers
         for internal in (n for n in names if n.lower().endswith(".gpkg")):
-            stem   = Path(internal).stem
+            stem = Path(internal).stem
             layers = _gpkg_layers(zip_path, internal)
             if not layers:
-                tqdm.write(f"  [WARN] no layers: {zip_path.name}/{internal}")
+                log.warning(f"no layers: {zip_path.name}/{internal}")
                 continue
             gpkg_stems.add(stem.lower())
             for layer in layers:
-                gpkg_jobs.append(Job(
-                    priority=0, kind="gpkg",
-                    zip_path=zip_path, rel_dir=rel_dir, zip_stem=zip_stem,
-                    internal=internal, layer=layer,
-                    out_path=_DEST_DIR / rel_dir / zip_stem / stem / f"{layer}.parquet",
-                    local_path=None,
-                ))
+                gpkg_jobs.append(
+                    Job(
+                        priority=0,
+                        kind="gpkg",
+                        zip_path=zip_path,
+                        rel_dir=rel_dir,
+                        zip_stem=zip_stem,
+                        internal=internal,
+                        layer=layer,
+                        out_path=_DEST_DIR / rel_dir / zip_stem / stem / f"{layer}.parquet",
+                        local_path=None,
+                    )
+                )
 
         # Orphan SHP (not already covered by a GPKG with the same stem)
         for internal in (n for n in names if n.lower().endswith(".shp")):
             stem = Path(internal).stem
             if stem.lower() not in gpkg_stems:
-                shp_jobs.append(Job(
-                    priority=1, kind="shp",
-                    zip_path=zip_path, rel_dir=rel_dir, zip_stem=zip_stem,
-                    internal=internal, layer=None,
-                    out_path=_DEST_DIR / rel_dir / zip_stem / f"{stem}.parquet",
-                    local_path=None,
-                ))
+                shp_jobs.append(
+                    Job(
+                        priority=1,
+                        kind="shp",
+                        zip_path=zip_path,
+                        rel_dir=rel_dir,
+                        zip_stem=zip_stem,
+                        internal=internal,
+                        layer=None,
+                        out_path=_DEST_DIR / rel_dir / zip_stem / f"{stem}.parquet",
+                        local_path=None,
+                    )
+                )
 
         # Rasters
         for internal in (n for n in names if Path(n).suffix.lower() in _RASTER_EXT):
             stem = Path(internal).stem
-            tif_jobs.append(Job(
-                priority=2, kind="tif",
-                zip_path=zip_path, rel_dir=rel_dir, zip_stem=zip_stem,
-                internal=internal, layer=None,
-                out_path=_DEST_DIR / rel_dir / zip_stem / f"{stem}.tif",
-                local_path=None,
-            ))
+            tif_jobs.append(
+                Job(
+                    priority=2,
+                    kind="tif",
+                    zip_path=zip_path,
+                    rel_dir=rel_dir,
+                    zip_stem=zip_stem,
+                    internal=internal,
+                    layer=None,
+                    out_path=_DEST_DIR / rel_dir / zip_stem / f"{stem}.tif",
+                    local_path=None,
+                )
+            )
 
     bar.close()
     if skipped:
-        print(f"  [scan] {skipped} ZIP(s) skipped — output already exists")
+        log.info(f"[scan] {skipped} ZIP(s) skipped — output already exists")
     return gpkg_jobs + shp_jobs + tif_jobs
+
 
 # ---------------------------------------------------------------------------
 # Stage 2 — Extract pending source files
 # ---------------------------------------------------------------------------
+
 
 def extract_pending(jobs: list[Job], tmp_dir: Path) -> list[Job]:
     """Extract source files for jobs into tmp_dir, skipping already-present files."""
@@ -331,9 +321,9 @@ def extract_pending(jobs: list[Job], tmp_dir: Path) -> list[Job]:
     pending = {k: v for k, v in unique.items() if not v.exists()}
     skipped = len(unique) - len(pending)
     if skipped:
-        tqdm.write(f"  [extract] {skipped} file(s) already extracted — skipping")
+        log.info(f"[extract] {skipped} file(s) already extracted — skipping")
 
-    raw = tmp_dir / "_raw"
+    raw_extract_dir = tmp_dir / "_raw"
     bar = tqdm(total=len(pending), desc="  extracting", unit="file", ncols=80)
 
     for (zip_path, internal), dest in unique.items():
@@ -344,42 +334,52 @@ def extract_pending(jobs: list[Job], tmp_dir: Path) -> list[Job]:
 
         with zipfile.ZipFile(zip_path) as zf:
             members = zf.namelist()
-            shutil.move(str(Path(zf.extract(internal, raw))), dest)
+            extracted_path = Path(zf.extract(internal, raw_extract_dir))
+            shutil.move(str(extracted_path), dest)
+
             if internal.lower().endswith(".shp"):
-                stem   = Path(internal).stem
+                stem = Path(internal).stem
                 parent = str(Path(internal).parent)
                 for name in members:
                     p = Path(name)
-                    if (p.stem == stem
-                            and p.suffix.lower() in _SHP_SIDECAR
-                            and str(p.parent) == parent):
+                    if (
+                        p.stem == stem
+                        and p.suffix.lower() in _SHP_SIDECAR
+                        and str(p.parent) == parent
+                    ):
                         sidecar_dest = dest.parent / p.name
                         if not sidecar_dest.exists():
-                            shutil.move(str(Path(zf.extract(name, raw))), sidecar_dest)
+                            extracted_sidecar_path = Path(zf.extract(name, raw_extract_dir))
+                            shutil.move(str(extracted_sidecar_path), sidecar_dest)
         bar.update(1)
 
     bar.close()
+    shutil.rmtree(raw_extract_dir, ignore_errors=True)  # Clean up the raw extract dir
     return [job._replace(local_path=unique[(job.zip_path, job.internal)]) for job in jobs]
+
 
 # ---------------------------------------------------------------------------
 # Stage 3 — Convert
 # ---------------------------------------------------------------------------
 
+
 def _source_mb(job: Job) -> float:
+    """Calculate the source file size in MiB."""
+    assert job.local_path is not None, "local_path must not be None at this stage"
     try:
         if job.kind == "shp":
             return sum(
                 p.stat().st_size
-                for p in job.local_path.parent.iterdir()  # type: ignore[union-attr]
-                if p.stem == job.local_path.stem           # type: ignore[union-attr]
-                and p.suffix.lower() in _SHP_SIDECAR
+                for p in job.local_path.parent.iterdir()
+                if p.stem == job.local_path.stem and p.suffix.lower() in _SHP_SIDECAR
             ) / 1_048_576
-        return job.local_path.stat().st_size / 1_048_576  # type: ignore[union-attr]
+        return job.local_path.stat().st_size / 1_048_576
     except OSError:
         return 0.0
 
 
 def _convert_vector(job: Job) -> tuple[str, float, str | None]:
+    """Convert a vector layer to GeoParquet."""
     from vector_to_geoparquet import convert_to_geoparquet
 
     src_mb = _source_mb(job)
@@ -422,11 +422,11 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
     from rasterio.enums import Resampling
     from rasterio.warp import calculate_default_transform, reproject
 
-    src_mb   = _source_mb(job)
-    dst_crs  = CRS.from_user_input(str(CONFIG["raster_crs"]))
-    tile_px  = int(CONFIG["cog_tile_px"])
+    src_mb = _source_mb(job)
+    dst_crs = CRS.from_user_input(str(CONFIG["raster_crs"]))
+    tile_px = int(CONFIG["cog_tile_px"])
     compress = str(CONFIG["raster_compress"])
-    overview_levels: list[int] = list(CONFIG["overview_levels"])  # type: ignore[arg-type]
+    overview_levels: list[int] = CONFIG["overview_levels"]  # type: ignore[assignment]
 
     job.out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -437,23 +437,30 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
             )
             nodata = src.nodata
             if nodata is None:
-                nodata = float("nan") if np.issubdtype(np.dtype(src.dtypes[0]), np.floating) else 0
+                # Use NaN for float dtypes, 0 for integer dtypes if nodata is not defined
+                nodata = (
+                    float("nan")
+                    if np.issubdtype(np.dtype(src.dtypes[0]), np.floating)
+                    else 0
+                )
 
             profile = src.profile.copy()
-            profile.update({
-                "crs":        dst_crs,
-                "transform":  transform,
-                "width":      width,
-                "height":     height,
-                "driver":     "GTiff",
-                "compress":   compress,
-                "predictor":  2,          # delta predictor — effective for all numeric types
-                "tiled":      True,
-                "blockxsize": tile_px,
-                "blockysize": tile_px,
-                "bigtiff":    "IF_SAFER",
-                "nodata":     nodata,
-            })
+            profile.update(
+                {
+                    "crs": dst_crs,
+                    "transform": transform,
+                    "width": width,
+                    "height": height,
+                    "driver": "GTiff",
+                    "compress": compress,
+                    "predictor": 2,  # delta predictor — effective for all numeric types
+                    "tiled": True,
+                    "blockxsize": tile_px,
+                    "blockysize": tile_px,
+                    "bigtiff": "IF_SAFER",
+                    "nodata": nodata,
+                }
+            )
 
             with rasterio.open(job.out_path, "w", **profile) as dst:
                 for band_idx in range(1, src.count + 1):
@@ -483,15 +490,19 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
 
 
 def _run_job(job: Job) -> tuple[str, float, str | None]:
+    """Run the appropriate conversion function for a job."""
     if job.kind == "tif":
         return _convert_raster(job)
     return _convert_vector(job)
+
 
 # ---------------------------------------------------------------------------
 # Reporting helpers
 # ---------------------------------------------------------------------------
 
+
 def _file_mb(path: Path) -> float | None:
+    """Get file size in MiB, or None if file does not exist."""
     try:
         return path.stat().st_size / 1_048_576
     except OSError:
@@ -499,6 +510,7 @@ def _file_mb(path: Path) -> float | None:
 
 
 def _fmt_duration(seconds: float) -> str:
+    """Format duration in seconds to HhMms or Ms."""
     s = int(seconds)
     if s < 60:
         return f"{s}s"
@@ -510,11 +522,12 @@ def _fmt_duration(seconds: float) -> str:
 
 
 def _print_report(rows: list[dict], totals: dict) -> None:
+    """Print a formatted summary report of conversion jobs."""
     rows = sorted(rows, key=lambda r: r["n"])
-    wb   = max(max((len(r["biome"]) for r in rows), default=5), 5)
-    wl   = max(max((len(r["label"]) for r in rows), default=20), 20)
-    sep  = "=" * (6 + 6 + wb + wl + 10 + 10 + 8 + 8)
-    div  = "-" * len(sep)
+    wb = max(max((len(r["biome"]) for r in rows), default=5), 5)
+    wl = max(max((len(r["label"]) for r in rows), default=20), 20)
+    sep = "=" * (6 + 6 + wb + wl + 10 + 10 + 8 + 8)
+    div = "-" * len(sep)
 
     print(f"\n{sep}")
     print(
@@ -526,7 +539,7 @@ def _print_report(rows: list[dict], totals: dict) -> None:
         tag = {"ok": "ok", "skipped": "skipped", "error": "ERROR"}.get(r["status"], r["status"])
         src = f"{r['src_mb']:>8.1f}" if r["src_mb"] is not None else "       -"
         out = f"{r['out_mb']:>8.1f}" if r["out_mb"] is not None else "       -"
-        pct = f"{r['pct']:>6.1f}"    if r["pct"]    is not None else "     -"
+        pct = f"{r['pct']:>6.1f}" if r["pct"] is not None else "     -"
         print(
             f"  {r['n']:>4}  {r['kind']:<5}  {r['biome']:<{wb}}  {r['label']:<{wl}}"
             f"  {src}  {out}  {pct}  {tag}"
@@ -547,9 +560,11 @@ def _print_report(rows: list[dict], totals: dict) -> None:
     )
     print(sep)
 
+
 # ---------------------------------------------------------------------------
 # --list command
 # ---------------------------------------------------------------------------
+
 
 def list_outputs() -> None:
     """Print a table of every GeoParquet and COG GeoTIFF in dest_dir."""
@@ -565,12 +580,12 @@ def list_outputs() -> None:
     for p in sorted(_DEST_DIR.rglob("*.parquet")):
         try:
             meta = pq.ParquetFile(p).schema_arrow.metadata or {}
-            geo  = json.loads(meta[b"geo"]) if b"geo" in meta else {}
+            geo = json.loads(meta[b"geo"]) if b"geo" in meta else {}
             crs_parts = []
             for col_meta in geo.get("columns", {}).values():
                 crs = col_meta.get("crs")
                 if isinstance(crs, dict):
-                    aid  = crs.get("id", {})
+                    aid = crs.get("id", {})
                     code = f"{aid.get('authority','')}:{aid.get('code','')}"
                     name = crs.get("name", "")
                     crs_parts.append(f"{code} ({name})" if code.strip(":") else name)
@@ -579,7 +594,7 @@ def list_outputs() -> None:
                 else:
                     crs_parts.append(str(crs)[:50])
             info = "; ".join(crs_parts) or "no geo metadata"
-            mb   = p.stat().st_size / 1_048_576
+            mb = p.stat().st_size / 1_048_576
         except Exception as exc:
             info, mb = f"error: {exc}", 0.0
         rows.append({"kind": "parquet", "path": str(p.relative_to(_DEST_DIR)), "mb": mb, "info": info})
@@ -600,8 +615,8 @@ def list_outputs() -> None:
         print(f"  No outputs found in {_DEST_DIR}")
         return
 
-    wp  = min(max(len(r["path"]) for r in rows), 80)
-    wi  = max(max(len(r["info"]) for r in rows), 10)
+    wp = min(max(len(r["path"]) for r in rows), 80)
+    wi = max(max(len(r["info"]) for r in rows), 10)
     sep = "=" * (wp + wi + 26)
     print(f"\n{sep}")
     print(f"  {'Kind':<8}  {'File':<{wp}}  {'MB':>7}  Info")
@@ -610,18 +625,21 @@ def list_outputs() -> None:
         print(f"  {r['kind']:<8}  {r['path']:<{wp}}  {r['mb']:>7.1f}  {r['info']}")
     print(sep)
 
-    n_pq  = sum(1 for r in rows if r["kind"] == "parquet")
+    n_pq = sum(1 for r in rows if r["kind"] == "parquet")
     n_tif = sum(1 for r in rows if r["kind"] == "tif")
     total = sum(r["mb"] for r in rows)
     print(f"  Files: {len(rows)}  ({n_pq} parquet, {n_tif} tif)  |  Total: {total:.1f} MB")
     print(sep)
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    t0  = time.perf_counter()
+    """Main function to orchestrate the conversion process."""
+    t0 = time.perf_counter()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  PRODES → GeoParquet + COG  v{__version__}  |  {now}")
@@ -639,19 +657,19 @@ def main() -> None:
             for p in _DEST_DIR.rglob(pat)
             if p.stat().st_size > 0
         }
-    print(f"\n  [1/3] existing outputs : {len(existing)}")
+    log.info(f"\n  [1/3] existing outputs : {len(existing)}")
 
     # 2. Discover ZIPs — all sub-folders of zip_root, most recent copy per filename
     zip_files = _latest_zips(_ZIP_ROOT)
-    print(f"  [2/3] scanning {len(zip_files)} zip archive(s) from {_ZIP_ROOT} ...")
+    log.info(f"  [2/3] scanning {len(zip_files)} zip archive(s) from {_ZIP_ROOT} ...")
     if not zip_files:
         sys.exit("  No zip archives found — nothing to do.")
 
     manifest = build_manifest(zip_files)
-    n_gpkg   = sum(1 for j in manifest if j.kind == "gpkg")
-    n_shp    = sum(1 for j in manifest if j.kind == "shp")
-    n_tif    = sum(1 for j in manifest if j.kind == "tif")
-    print(
+    n_gpkg = sum(1 for j in manifest if j.kind == "gpkg")
+    n_shp = sum(1 for j in manifest if j.kind == "shp")
+    n_tif = sum(1 for j in manifest if j.kind == "tif")
+    log.info(
         f"        manifest: {len(manifest)} job(s)  "
         f"(gpkg layers: {n_gpkg}  orphan shapefiles: {n_shp}  rasters: {n_tif})"
     )
@@ -659,7 +677,7 @@ def main() -> None:
     # 3. Cross-reference
     done_jobs = [j for j in manifest if j.out_path.resolve() in existing]
     todo_jobs = [j for j in manifest if j.out_path.resolve() not in existing]
-    print(f"  [3/3] pending: {len(todo_jobs)}  |  already converted: {len(done_jobs)}")
+    log.info(f"  [3/3] pending: {len(todo_jobs)}  |  already converted: {len(done_jobs)}")
 
     if not todo_jobs:
         print("\n  All files already converted.\n")
@@ -675,22 +693,22 @@ def main() -> None:
         extract_root = Path(tempfile.mkdtemp(prefix="prodes_"))
         persistent = False
 
-    print(f"\n  extract : {extract_root}  ({'persistent' if persistent else 'temp'})")
-    print(f"  output  : {_DEST_DIR}")
-    print(f"  workers : {CONFIG['n_workers']}\n")
+    log.info(f"\n  extract : {extract_root}  ({'persistent' if persistent else 'temp'})")
+    log.info(f"  output  : {_DEST_DIR}")
+    log.info(f"  workers : {CONFIG['n_workers']}\n")
 
     try:
         todo_jobs = extract_pending(todo_jobs, extract_root)
 
         rows: list[dict] = [
             {
-                "n":      i,
-                "kind":   j.kind,
-                "biome":  j.rel_dir.replace("\\", "/").split("/")[0],
-                "label":  j.layer or Path(j.internal).stem,
-                "src_mb": None,
+                "n": i,
+                "kind": j.kind,
+                "biome": j.rel_dir.replace("\\", "/").split("/")[0],
+                "label": j.layer or Path(j.internal).stem,
+                "src_mb": _source_mb(j) if j.local_path else None, # Recalculate if local path exists for done jobs
                 "out_mb": _file_mb(j.out_path),
-                "pct":    None,
+                "pct": None,
                 "status": "skipped",
             }
             for i, j in enumerate(done_jobs, 1)
@@ -712,19 +730,27 @@ def main() -> None:
                 for i, job in enumerate(todo_jobs, 1)
             }
             for fut in as_completed(futures):
-                i, job              = futures[fut]
+                i, job = futures[fut]
                 status, src_mb, err = fut.result()
-                biome  = job.rel_dir.replace("\\", "/").split("/")[0]
-                label  = job.layer or Path(job.internal).stem
+                biome = job.rel_dir.replace("\\", "/").split("/")[0]
+                label = job.layer or Path(job.internal).stem
                 out_mb = _file_mb(job.out_path) if status != "error" else None
-                pct    = (out_mb / src_mb * 100) if (out_mb and src_mb) else None
-                rows.append({
-                    "n": i, "kind": job.kind, "biome": biome, "label": label,
-                    "src_mb": src_mb, "out_mb": out_mb, "pct": pct, "status": status,
-                })
+                pct = (out_mb / src_mb * 100) if (out_mb and src_mb) else None
+                rows.append(
+                    {
+                        "n": i,
+                        "kind": job.kind,
+                        "biome": biome,
+                        "label": label,
+                        "src_mb": src_mb,
+                        "out_mb": out_mb,
+                        "pct": pct,
+                        "status": status,
+                    }
+                )
                 counts["ok" if status == "ok" else "errors" if status == "error" else "skipped"] += 1
                 if status == "error":
-                    tqdm.write(f"  [ERROR] {label}: {err}")
+                    log.error(f"  [ERROR] {label}: {err}")
                 bar.update(1)
 
         bar.close()
@@ -732,33 +758,33 @@ def main() -> None:
     finally:
         if not persistent:
             shutil.rmtree(extract_root, ignore_errors=True)
-            print(f"\n  temp removed: {extract_root}")
+            log.info(f"\n  temp removed: {extract_root}")
         else:
-            print(f"\n  extracted files kept in: {extract_root}")
+            log.info(f"\n  extracted files kept in: {extract_root}")
 
     elapsed = time.perf_counter() - t0
     _print_report(rows, {"total": len(manifest), **counts, "elapsed": elapsed})
 
     _DEST_DIR.mkdir(parents=True, exist_ok=True)
-    ts          = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = _DEST_DIR / f"report_{ts}.json"
     report_path.write_text(
         json.dumps(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "version":      __version__,
-                "config":       {k: str(v) for k, v in CONFIG.items()},
-                "summary":      {"total": len(manifest), **counts, "elapsed_s": round(elapsed, 1)},
+                "version": __version__,
+                "config": {k: str(v) for k, v in CONFIG.items()},
+                "summary": {"total": len(manifest), **counts, "elapsed_s": round(elapsed, 1)},
                 "jobs": [
                     {
-                        "n":      r["n"],
-                        "kind":   r["kind"],
-                        "biome":  r["biome"],
-                        "label":  r["label"],
+                        "n": r["n"],
+                        "kind": r["kind"],
+                        "biome": r["biome"],
+                        "label": r["label"],
                         "status": r["status"],
                         "src_mb": round(r["src_mb"], 2) if r["src_mb"] is not None else None,
                         "out_mb": round(r["out_mb"], 2) if r["out_mb"] is not None else None,
-                        "pct":    round(r["pct"],    1) if r["pct"]    is not None else None,
+                        "pct": round(r["pct"], 1) if r["pct"] is not None else None,
                     }
                     for r in sorted(rows, key=lambda r: r["n"])
                 ],
@@ -768,7 +794,7 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    print(f"  report  : {report_path}\n")
+    log.info(f"  report  : {report_path}\n")
 
 
 if __name__ == "__main__":

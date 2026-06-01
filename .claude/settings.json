@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "PowerShell",
       "PowerShell(Remove-Item \"c:\\\\Amintas\\\\Prodes\\\\scripts\\\\03_convert_tiled_vectors_rasters.py\" -Confirm:$false)",
       "Bash(git rm *)",
       "Bash(git commit -m ' *)",

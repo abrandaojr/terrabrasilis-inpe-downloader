@@ -1,60 +1,21 @@
-"""
-01_download_zips.py
-===================
-Discovers, lists, downloads, and verifies all .zip files at:
-  https://terrabrasilis.dpi.inpe.br/en/download-files/
-
-Saves to: C:\\Amintas\\Prodes\\zip\\<today's-date>\\
-
-Workflow
---------
-1. Scrape the TerraBrasilis download page for all .zip links.
-2. For each file, check whether it already exists anywhere under ROOT_FOLDER.
-3. Print a two-section inventory table:
-      Section A - files already downloaded (filename + dated folder found)
-      Section B - files still missing (filename + will be downloaded)
-4. Ask the user to confirm before downloading anything.
-5. Download only the missing files, one at a time, with resume support.
-6. Validate every expected file (ZIP integrity) and repair if needed.
-
-Skip logic
-----------
-A file is skipped if a non-empty, non-.tmp file with the same name exists
-anywhere under ROOT_FOLDER, regardless of subfolder depth or structure.
-
-Resume support
---------------
-Each file is streamed to a .tmp file first. If the script is interrupted,
-the .tmp file is kept on disk. On the next run, an HTTP Range request
-resumes from where it stopped — no bytes are re-downloaded.
-
-Usage
------
-    python 01_download_zips.py
-
-Author
-------
-Amintas Brandão Jr. <abrandaojr@gmail.com>
-Imazon — Instituto do Homem e Meio Ambiente da Amazônia
-
-License
--------
-MIT
-"""
-
 from __future__ import annotations
 
 __version__ = "1.0.0"
-__all__: list[str] = []
 
 import importlib.util
 import subprocess
 import sys
-
+import time
+import zipfile as zf
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TypedDict
+from urllib.parse import urljoin, urlparse
 
 # ---------------------------------------------------------------------------
 # Dependency bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
@@ -82,6 +43,7 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     if not missing:
         return
 
+    # Check for `uv` and install it if missing to enable faster dependency resolution
     if not shutil.which("uv"):
         subprocess.call(
             [sys.executable, "-m", "pip", "install", "--quiet", "uv"],
@@ -108,10 +70,10 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 
 
 _bootstrap(
-    ("requests",       "requests"),
+    ("requests", "requests"),
     ("beautifulsoup4", "bs4"),
-    ("lxml",           "lxml"),
-    ("tqdm",           "tqdm"),
+    ("lxml", "lxml"),
+    ("tqdm", "tqdm"),
 )
 
 
@@ -120,14 +82,8 @@ _bootstrap(
 # ---------------------------------------------------------------------------
 
 import csv
-import json
-import time
-import zipfile as zf
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import TypedDict
-from urllib.parse import urljoin, urlparse
 
+import json
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -139,25 +95,26 @@ from urllib3.util.retry import Retry
 # Types
 # ---------------------------------------------------------------------------
 
+
 class ZipEntry(TypedDict):
-    url:            str
-    filename:       str
+    url: str
+    filename: str
     filename_local: str
-    text:           str
-    biome:          str
-    category:       str
+    text: str
+    biome: str
+    category: str
 
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
-CONFIG: dict[str, object] = {
-    "base_url":         "https://terrabrasilis.dpi.inpe.br/en/download-files/",
-    "root_folder":      r"C:\Amintas\Prodes\zip",
-    "http_timeout":     30,
+CONFIG: dict[str, Any] = {
+    "base_url": "https://terrabrasilis.dpi.inpe.br/en/download-files/",
+    "root_folder": r"C:\Amintas\Prodes\zip",
+    "http_timeout": 30,
     "download_timeout": 600,
-    "chunk_size":       32 * 1024 * 1024,  # 32 MB per stream chunk — maximize single-file throughput
+    "chunk_size": 32 * 1024 * 1024,  # 32 MB per stream chunk — maximize single-file throughput
     # Files to permanently skip (exact filename, case-sensitive).
     "skip_files": [
         "prodes_brasil_2023_arte.zip",
@@ -168,16 +125,16 @@ CONFIG: dict[str, object] = {
 # Module-level constants derived from CONFIG
 # ---------------------------------------------------------------------------
 
-BASE_URL         = str(CONFIG["base_url"])
-ROOT_FOLDER      = Path(str(CONFIG["root_folder"]))
-DEST_FOLDER      = ROOT_FOLDER / datetime.now().strftime("%Y-%m-%d")
-HTTP_TIMEOUT     = int(CONFIG["http_timeout"])
+BASE_URL = str(CONFIG["base_url"])
+ROOT_FOLDER = Path(str(CONFIG["root_folder"]))
+DEST_FOLDER = ROOT_FOLDER / datetime.now().strftime("%Y-%m-%d")
+HTTP_TIMEOUT = int(CONFIG["http_timeout"])
 DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
-CHUNK_SIZE       = int(CONFIG["chunk_size"])
-SKIP_FILES       = frozenset(CONFIG["skip_files"])  # type: ignore[arg-type]
-_HTML_PARSER     = "lxml" if importlib.util.find_spec("lxml") else "html.parser"
-SEP              = "=" * 65
-DIV              = "-" * 65
+CHUNK_SIZE = int(CONFIG["chunk_size"])
+SKIP_FILES = frozenset(CONFIG["skip_files"])
+_HTML_PARSER = "lxml" if importlib.util.find_spec("lxml") else "html.parser"
+SEP = "=" * 65
+DIV = "-" * 65
 
 HEADERS = {
     "User-Agent": (
@@ -192,7 +149,9 @@ HEADERS = {
 # HTTP session
 # ---------------------------------------------------------------------------
 
+
 def _make_session() -> requests.Session:
+    """Create a requests session with retry logic and custom headers."""
     session = requests.Session()
     session.headers.update(HEADERS)
     retry = Retry(
@@ -204,7 +163,7 @@ def _make_session() -> requests.Session:
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
-    session.mount("http://",  adapter)
+    session.mount("http://", adapter)
     return session
 
 
@@ -212,14 +171,18 @@ def _make_session() -> requests.Session:
 # Scraping - static
 # ---------------------------------------------------------------------------
 
+
 def fetch_static(url: str) -> list[ZipEntry]:
+    """Fetch and parse ZIP links from a static HTML page."""
     print(f"[scrape] Static request at: {url}")
-    resp = _make_session().get(url, timeout=HTTP_TIMEOUT)
+    session = _make_session()
+    resp = session.get(url, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
     return _extract_zip_links(BeautifulSoup(resp.text, _HTML_PARSER), base_url=url)
 
 
 def _extract_zip_links(soup: BeautifulSoup, base_url: str) -> list[ZipEntry]:
+    """Extract .zip file links from BeautifulSoup object."""
     results: list[ZipEntry] = []
     seen: set[str] = set()
     for a in soup.find_all("a", href=True):
@@ -231,43 +194,45 @@ def _extract_zip_links(soup: BeautifulSoup, base_url: str) -> list[ZipEntry]:
             continue
         seen.add(full_url)
         biome, category = _infer_from_url(full_url)
+        filename = urlparse(full_url).path.split("/")[-1]
         results.append({
-            "url":            full_url,
-            "filename":       urlparse(full_url).path.split("/")[-1],
-            "filename_local": "",
-            "text":           a.get_text(strip=True) or "(no text)",
-            "biome":          biome,
-            "category":       category,
+            "url": full_url,
+            "filename": filename,
+            "filename_local": filename,  # Initially, local name is the same as remote
+            "text": a.get_text(strip=True) or "(no text)",
+            "biome": biome,
+            "category": category,
         })
     return results
 
 
 _BIOME_MAP: dict[str, str] = {
-    "amz-prodes":            "Amazon Biome",
-    "amz-aux":               "Amazon Biome",
-    "amz-terraclass":        "Amazon Biome",
-    "legal-amz-prodes":      "Legal Amazon",
-    "legal-amz-aux":         "Legal Amazon",
-    "caatinga-prodes":       "Caatinga",
-    "caatinga-aux":          "Caatinga",
-    "cerrado-prodes":        "Cerrado",
-    "cerrado-aux":           "Cerrado",
-    "cerrado-vegetation":    "Cerrado",
+    "amz-prodes": "Amazon Biome",
+    "amz-aux": "Amazon Biome",
+    "amz-terraclass": "Amazon Biome",
+    "legal-amz-prodes": "Legal Amazon",
+    "legal-amz-aux": "Legal Amazon",
+    "caatinga-prodes": "Caatinga",
+    "caatinga-aux": "Caatinga",
+    "cerrado-prodes": "Cerrado",
+    "cerrado-aux": "Cerrado",
+    "cerrado-vegetation": "Cerrado",
     "mata-atlantica-prodes": "Mata Atlantica",
-    "mata-atlantica-aux":    "Mata Atlantica",
-    "pampa-prodes":          "Pampa",
-    "pampa-aux":             "Pampa",
-    "pantanal-prodes":       "Pantanal",
-    "pantanal-aux":          "Pantanal",
-    "brasil-prodes":         "Brazil",
-    "vs":                    "Vegetacao Secundaria",
+    "mata-atlantica-aux": "Mata Atlantica",
+    "pampa-prodes": "Pampa",
+    "pampa-aux": "Pampa",
+    "pantanal-prodes": "Pantanal",
+    "pantanal-aux": "Pantanal",
+    "brasil-prodes": "Brazil",
+    "vs": "Vegetacao Secundaria",
 }
 
 
 def _infer_from_url(url: str) -> tuple[str, str]:
+    """Infer biome and category from URL path slugs."""
     parts = urlparse(url).path.strip("/").split("/")
     try:
-        slug      = parts[2]
+        slug = parts[2]
         file_type = parts[3].capitalize()
     except IndexError:
         return "N/A", "N/A"
@@ -278,11 +243,14 @@ def _infer_from_url(url: str) -> tuple[str, str]:
 # Scraping - dynamic (Selenium fallback)
 # ---------------------------------------------------------------------------
 
+
 def _find_chrome() -> str | None:
     """Return the Chrome executable path, or None if not found."""
     import shutil
 
-    if exe := shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chromium"):
+    if exe := shutil.which("google-chrome") or \
+               shutil.which("chromium-browser") or \
+               shutil.which("chromium"):
         return exe
     for candidate in (
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -295,6 +263,7 @@ def _find_chrome() -> str | None:
 
 
 def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
+    """Fetch and parse ZIP links using Selenium for JavaScript-rendered pages."""
     chrome_path = _find_chrome()
     if not chrome_path:
         print(
@@ -303,10 +272,6 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
         )
         return []
 
-    # Only selenium is needed — selenium-manager (built into Selenium 4.6+)
-    # downloads and manages the matching ChromeDriver automatically.
-    # webdriver-manager is NOT used: it spawns blocking PowerShell calls
-    # on Windows that can hang indefinitely when detecting browser version.
     _bootstrap(("selenium", "selenium"))
 
     import threading
@@ -324,9 +289,7 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
         opts.add_argument(arg)
     opts.add_argument(f"user-agent={HEADERS['User-Agent']}")
 
-    # Run driver initialisation in a daemon thread so that a hang (e.g.
-    # selenium-manager network timeout) never blocks the pipeline forever.
-    _slot: dict = {}
+    _slot: dict[str, Any] = {}
 
     def _init_driver() -> None:
         try:
@@ -336,7 +299,7 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
 
     t = threading.Thread(target=_init_driver, daemon=True)
     t.start()
-    t.join(timeout=60)
+    t.join(timeout=60)  # Wait up to 60 seconds for driver initialization
 
     if t.is_alive():
         print(
@@ -354,9 +317,6 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
 
     driver = _slot["driver"]
     try:
-        # Hard timeout so driver.get() never hangs indefinitely.
-        # After 30 s Selenium raises TimeoutException (subclass of Exception),
-        # which is caught below — no Ctrl+C needed.
         driver.set_page_load_timeout(30)
         driver.set_script_timeout(15)
 
@@ -369,9 +329,6 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
     except KeyboardInterrupt:
         raise
     except BaseException as exc:
-        # Catch BaseException (not just Exception) so that internal errors
-        # like ConnectionResetError wrapped in chained exceptions are handled
-        # gracefully without leaking a traceback.
         if isinstance(exc, KeyboardInterrupt):
             raise
         print(f"  [skip] Selenium failed: {type(exc).__name__}: {exc}")
@@ -383,7 +340,8 @@ def fetch_dynamic(url: str, wait_seconds: int = 8) -> list[ZipEntry]:
             pass
 
 
-def _expand_all_menus(driver) -> None:
+def _expand_all_menus(driver: Any) -> None:
+    """Expand all accordion/menu elements on the page."""
     try:
         from selenium.webdriver.common.by import By
         toggles = driver.find_elements(
@@ -405,20 +363,14 @@ def _expand_all_menus(driver) -> None:
 # Filename resolution + path helpers
 # ---------------------------------------------------------------------------
 
-def resolve_unique_filenames(zips: list[ZipEntry]) -> list[ZipEntry]:
-    result: list[ZipEntry] = []
-    for z in zips:
-        z = z.copy()
-        z["filename_local"] = z["filename"]
-        result.append(z)
-    return result
-
 
 def _dest_path(z: ZipEntry, folder: Path) -> Path:
+    """Return the final destination path for a given ZipEntry."""
     return folder / z["biome"] / z["category"] / z["filename_local"]
 
 
 def _tmp_path(z: ZipEntry, folder: Path) -> Path:
+    """Return the temporary download path for a given ZipEntry."""
     return _dest_path(z, folder).with_suffix(".tmp")
 
 
@@ -452,6 +404,7 @@ def _is_already_downloaded(z: ZipEntry, folder: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 # Pre-download inventory table + confirmation
 # ---------------------------------------------------------------------------
+
 
 def _folder_label(path: Path) -> str:
     """
@@ -489,11 +442,13 @@ def print_inventory_table(zips: list[ZipEntry]) -> list[ZipEntry]:
 
     Returns the list of ZipEntry items that still need downloading.
     """
-    already:  list[tuple[str, str]] = []   # (filename, dated-folder)
-    pending_rows: list[tuple[str, str]] = []   # (filename, dest)
-    pending_entries: list[ZipEntry]     = []
+    already: list[tuple[str, str]] = []  # (filename, dated-folder)
+    pending_rows: list[tuple[str, str]] = []  # (filename, dest)
+    pending_entries: list[ZipEntry] = []
 
-    for z in sorted(zips, key=lambda x: (x["biome"], x["category"], x["filename_local"])):
+    for z in sorted(
+        zips, key=lambda x: (x["biome"], x["category"], x["filename_local"])
+    ):
         existing = _is_already_downloaded(z, DEST_FOLDER)
         if existing is not None:
             already.append((z["filename_local"], _folder_label(existing)))
@@ -555,6 +510,7 @@ def ask_confirmation(pending: list[ZipEntry]) -> bool:
 # Single-file sequential download with resume
 # ---------------------------------------------------------------------------
 
+
 def _download_one(
     z: ZipEntry,
     folder: Path,
@@ -564,15 +520,15 @@ def _download_one(
     total: int = 0,
 ) -> tuple[str, str, str | None]:
     """
-    Download one file.  Skips if a valid copy exists anywhere under ROOT_FOLDER.
+    Download one file. Skips if a valid copy exists anywhere under ROOT_FOLDER.
     Resumes from a .tmp partial file if present.
 
     Returns (filename_local, status, detail).
     status: 'ok' | 'skipped' | 'error' | 'forbidden'
     """
-    name  = z["filename_local"]
-    dest  = _dest_path(z, folder)
-    tmp   = _tmp_path(z, folder)
+    name = z["filename_local"]
+    dest = _dest_path(z, folder)
+    tmp = _tmp_path(z, folder)
     label = f"[{index}/{total}] {name}"
 
     if not force:
@@ -595,10 +551,9 @@ def _download_one(
         with session.get(
             z["url"], headers=extra_headers, stream=True, timeout=DOWNLOAD_TIMEOUT
         ) as r:
-
             if r.status_code == 416:
-                print(f"    Range rejected, restarting from byte 0...")
-                bytes_done    = 0
+                print("    Range rejected, restarting from byte 0...")
+                bytes_done = 0
                 extra_headers = {}
                 tmp.unlink(missing_ok=True)
                 r.close()
@@ -611,10 +566,10 @@ def _download_one(
                 r.raise_for_status()
 
             content_length = r.headers.get("Content-Length")
-            total_bytes    = (int(content_length) + bytes_done) if content_length else None
+            total_bytes = (int(content_length) + bytes_done) if content_length else None
 
             mode = "ab" if bytes_done else "wb"
-            with open(tmp, mode, buffering=CHUNK_SIZE) as f, tqdm(
+            with open(tmp, mode) as f, tqdm(
                 total=total_bytes,
                 initial=bytes_done,
                 unit="B",
@@ -622,7 +577,7 @@ def _download_one(
                 unit_divisor=1024,
                 desc=f"    {name[:55]}",
                 ncols=90,
-                mininterval=0.5,   # update bar at most twice per second
+                mininterval=0.5,  # update bar at most twice per second
             ) as bar:
                 for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                     f.write(chunk)
@@ -645,14 +600,16 @@ def _download_one(
 # Sequential download loop
 # ---------------------------------------------------------------------------
 
+
 def download_all(
     zips: list[ZipEntry],
     folder: Path,
     session: requests.Session,
 ) -> dict:
+    """Download all pending ZIP files."""
     folder.mkdir(parents=True, exist_ok=True)
     n = len(zips)
-    summary: dict[str, list] = {"ok": [], "error": [], "skipped": [], "forbidden": []}
+    summary: dict[str, list[Any]] = {"ok": [], "error": [], "skipped": [], "forbidden": []}
 
     print(f"\n{SEP}")
     print(f"  DOWNLOAD  ({n} file(s)  |  full bandwidth per file)")
@@ -676,7 +633,8 @@ def download_all(
     return summary
 
 
-def print_download_summary(summary: dict, folder: Path) -> None:
+def print_download_summary(summary: dict[str, Any], folder: Path) -> None:
+    """Print a summary of the download operation."""
     print(f"\n{SEP}\n  DOWNLOAD SUMMARY\n{SEP}")
     print(f"  Successfully downloaded  : {len(summary['ok'])}")
     print(f"  Already existed (skipped): {len(summary['skipped'])}")
@@ -693,7 +651,9 @@ def print_download_summary(summary: dict, folder: Path) -> None:
 # ZIP integrity check
 # ---------------------------------------------------------------------------
 
+
 def verify_zip(path: Path) -> tuple[bool, str]:
+    """Verify the integrity of a ZIP file."""
     if not path.exists() or path.stat().st_size == 0:
         return False, "file missing or empty"
     try:
@@ -710,12 +670,13 @@ def verify_zip(path: Path) -> tuple[bool, str]:
 # Post-download validation + repair
 # ---------------------------------------------------------------------------
 
+
 def validate_and_repair(
     zips: list[ZipEntry],
     folder: Path,
     session: requests.Session,
     max_attempts: int = 3,
-) -> dict:
+) -> dict[str, Any]:
     """
     Phase 1 -- For each expected file, search anywhere under ROOT_FOLDER.
                Only files absent from the entire tree are marked missing.
@@ -733,12 +694,12 @@ def validate_and_repair(
 
     # ---- Phase 1 --------------------------------------------------------
 
-    intact:  list[str]      = []
+    intact: list[str] = []
     missing: list[ZipEntry] = []
     corrupt: list[ZipEntry] = []
 
     for z in tqdm(zips, desc="  Checking", unit="file", ncols=80):
-        name     = z["filename_local"]
+        name = z["filename_local"]
         existing = _is_already_downloaded(z, folder)
 
         if existing is None:
@@ -789,13 +750,13 @@ def validate_and_repair(
 
         still_bad: list[ZipEntry] = []
         for z in need_repair:
-            name     = z["filename_local"]
+            name = z["filename_local"]
             existing = _is_already_downloaded(z, folder)
-            ok       = existing is not None and verify_zip(existing)[0]
+            ok = existing is not None and verify_zip(existing)[0]
             if ok:
                 intact.append(name)
-                missing[:] = [m for m in missing if m["filename_local"] != name]
-                corrupt[:] = [c for c in corrupt if c["filename_local"] != name]
+                missing = [m for m in missing if m["filename_local"] != name]
+                corrupt = [c for c in corrupt if c["filename_local"] != name]
             else:
                 reason = "not found" if existing is None else verify_zip(existing)[1]
                 print(f"  [STILL FAILING] {name}: {reason}")
@@ -819,31 +780,32 @@ def validate_and_repair(
     )
 
     return {
-        "intact":  intact,
+        "intact": intact,
         "missing": [z["filename_local"] for z in missing],
         "corrupt": [z["filename_local"] for z in corrupt],
-        "failed":  failed,
+        "failed": failed,
     }
 
 
 def _save_report(
     folder: Path,
-    intact:  list[str],
+    intact: list[str],
     missing: list[str],
     corrupt: list[str],
-    failed:  list[str],
+    failed: list[str],
 ) -> None:
+    """Save the validation report to a JSON file."""
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
-            "intact":              len(intact),
-            "missing":             len(missing),
-            "corrupt":             len(corrupt),
+            "intact": len(intact),
+            "missing": len(missing),
+            "corrupt": len(corrupt),
             "failed_after_repair": len(failed),
         },
-        "intact":              intact,
-        "missing":             missing,
-        "corrupt":             corrupt,
+        "intact": intact,
+        "missing": missing,
+        "corrupt": corrupt,
         "failed_after_repair": failed,
     }
     path = folder / "validation_report.json"
@@ -852,7 +814,8 @@ def _save_report(
     print(f"\n  Validation report saved to: {path}")
 
 
-def print_validation_summary(summary: dict) -> None:
+def print_validation_summary(summary: dict[str, Any]) -> None:
+    """Print a summary of the validation results."""
     print(f"\n{SEP}\n  VALIDATION RESULT\n{SEP}")
     print(f"  Intact                   : {len(summary['intact'])}")
     print(f"  Missing (not downloaded) : {len(summary['missing'])}")
@@ -863,7 +826,7 @@ def print_validation_summary(summary: dict) -> None:
         for name in summary["failed"]:
             print(f"    * {name}")
     else:
-        print(f"\n  All files intact.")
+        print("\n  All files intact.")
     print(SEP)
 
 
@@ -871,7 +834,9 @@ def print_validation_summary(summary: dict) -> None:
 # Metadata export
 # ---------------------------------------------------------------------------
 
+
 def save_csv(zips: list[ZipEntry], folder: Path) -> None:
+    """Save metadata of discovered ZIPs to a CSV file."""
     path = folder / "terrabrasilis_zips.csv"
     fields = ["biome", "category", "filename", "text", "url"]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -882,13 +847,14 @@ def save_csv(zips: list[ZipEntry], folder: Path) -> None:
 
 
 def save_json(zips: list[ZipEntry], folder: Path) -> None:
+    """Save metadata of discovered ZIPs to a JSON file."""
     path = folder / "terrabrasilis_zips.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "scraped_at": datetime.now(timezone.utc).isoformat(),
-                "count":      len(zips),
-                "files":      zips,
+                "count": len(zips),
+                "files": zips,
             },
             f, ensure_ascii=False, indent=2,
         )
@@ -899,113 +865,109 @@ def save_json(zips: list[ZipEntry], folder: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
+def _count_local_zips() -> int:
+    """Count non-empty, non-.tmp .zip files anywhere under ROOT_FOLDER."""
+    if not ROOT_FOLDER.exists():
+        return 0
+    return sum(
+        1 for z in ROOT_FOLDER.rglob("*.zip")
+        if z.stat().st_size > 0 and not z.name.endswith(".tmp")
+    )
+
+
 def main() -> None:
+    """Main function to discover, download, and validate TerraBrasilis ZIP files."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  TerraBrasilis Download  v{__version__}  |  {now}")
     print(f"{SEP}")
 
-    session     = _make_session()
-    MAX_PASSES  = 20
+    session = _make_session()
+    MAX_PASSES = 20
     RETRY_DELAY = 30
+    all_remote_zips: list[ZipEntry] = []
 
     # ------------------------------------------------------------------ #
-    # Step 1: scrape the site                                             #
+    # Step 1: scrape the site                                            #
     # ------------------------------------------------------------------ #
     print(f"\n{SEP}\n  STEP 1 OF 4  --  Scraping TerraBrasilis\n{SEP}")
 
-    def _count_local_zips() -> int:
-        return sum(
-            1 for z in ROOT_FOLDER.rglob("*.zip")
-            if z.stat().st_size > 0 and not z.name.endswith(".tmp")
-        ) if ROOT_FOLDER.exists() else 0
-
+    # Attempt static scrape
     try:
-        zips = fetch_static(BASE_URL)
+        all_remote_zips = fetch_static(BASE_URL)
     except Exception as exc:
-        print(f"  -> Static request failed: {exc}")
-        zips = []
+        print(f"  -> Static request failed: {type(exc).__name__}: {exc}")
 
-    if zips:
-        print(f"  -> {len(zips)} ZIP(s) found via static request.")
+    if all_remote_zips:
+        print(f"  -> {len(all_remote_zips)} ZIP(s) found via static request.")
     else:
         print("  -> No ZIPs found via static request (JS rendering required).")
-
-        # Only invoke Selenium when there are no local files to fall back on.
-        # If files already exist, Selenium is skipped entirely — preventing
-        # the ConnectionResetError / hang that occurs on the first cold run.
-        local_count = _count_local_zips()
-        if local_count:
-            print(
-                f"  -> {local_count} ZIP(s) already present under {ROOT_FOLDER}.\n"
-                "  Skipping Selenium — existing files are sufficient."
-            )
-            return   # exit 0, pipeline continues to step 2
-        else:
-            print("  No local files found. Trying Selenium...")
+        # If static scrape failed and there are no existing local files, try dynamic (Selenium).
+        # If local files exist, we cannot accurately update the remote inventory, so we exit.
+        if not _count_local_zips():
+            print("  No local files found. Attempting dynamic scraping with Selenium...")
             try:
-                zips = fetch_dynamic(BASE_URL)
+                all_remote_zips = fetch_dynamic(BASE_URL)
             except Exception as exc:
-                print(f"  -> Selenium error: {exc}")
-                zips = []
-            print(f"  -> {len(zips)} ZIP(s) found via Selenium.")
-
-    if not zips:
-        # Check whether files are already present locally before giving up
-        existing_count = sum(
-            1 for z in ROOT_FOLDER.rglob("*.zip")
-            if z.stat().st_size > 0 and not z.name.endswith(".tmp")
-        ) if ROOT_FOLDER.exists() else 0
-
-        if existing_count:
-            print(
-                f"\n  Scraping unavailable, but {existing_count} ZIP(s) already present "
-                f"under {ROOT_FOLDER}.\n"
-                "  No download needed — continuing pipeline with existing files."
-            )
-            return   # exit 0 — pipeline proceeds to step 2
+                print(f"  -> Selenium error: {type(exc).__name__}: {exc}")
+            print(f"  -> {len(all_remote_zips)} ZIP(s) found via Selenium.")
         else:
             print(
-                "  No ZIP files found via scraping and none present locally.\n"
-                "  Opening the download page in your default browser..."
+                f"  -> {_count_local_zips()} ZIP(s) already present under {ROOT_FOLDER}.\n"
+                "  Skipping Selenium as remote file list cannot be updated without scraping."
+            )
+
+    if not all_remote_zips:
+        # If still no remote ZIPs after all scraping attempts
+        existing_local_count = _count_local_zips()
+        if existing_local_count:
+            print(
+                f"\n  Scraping failed to discover remote files, but {existing_local_count} "
+                f"ZIP(s) already present under {ROOT_FOLDER}.\n"
+                "  Cannot guarantee full inventory or update. Exiting gracefully."
+            )
+            sys.exit(0)  # Exit with success, implies "nothing to do" or "already covered"
+        else:
+            print(
+                "\n  No ZIP files found via scraping and none present locally.\n"
+                "  Opening the download page in your default browser for manual download."
             )
             import webbrowser
             webbrowser.open(BASE_URL)
-            print(
-                f"  URL: {BASE_URL}\n"
-                f"  Download files manually to: {ROOT_FOLDER}\n"
-                "  Then resume with:  python 00_pipeline.py --from 2"
+            print(f"  URL: {BASE_URL}\n"
+                  f"  Download files manually to: {ROOT_FOLDER}\n"
+                  "  Then re-run this script."
             )
-            return   # exit 0 — user needs to download manually
-
-    zips = resolve_unique_filenames(zips)
+            sys.exit(1)  # Exit with error, implies "failed to get files"
 
     if SKIP_FILES:
-        before = len(zips)
-        zips   = [z for z in zips if z["filename"] not in SKIP_FILES]
-        print(f"  -> {before - len(zips)} file(s) excluded by skip_files config.")
+        before = len(all_remote_zips)
+        all_remote_zips = [z for z in all_remote_zips if z["filename"] not in SKIP_FILES]
+        if before - len(all_remote_zips) > 0:
+            print(f"  -> {before - len(all_remote_zips)} file(s) excluded by skip_files config.")
 
     # ------------------------------------------------------------------ #
-    # Step 2: show inventory table                                        #
+    # Step 2: show inventory table                                       #
     # ------------------------------------------------------------------ #
     print(f"\n{SEP}\n  STEP 2 OF 4  --  Inventory check\n{SEP}")
     print(f"  Checking what is already present under: {ROOT_FOLDER}\n")
 
-    pending = print_inventory_table(zips)
+    pending = print_inventory_table(all_remote_zips)
 
     # ------------------------------------------------------------------ #
-    # Step 3: ask for confirmation                                        #
+    # Step 3: ask for confirmation                                       #
     # ------------------------------------------------------------------ #
     print(f"\n{SEP}\n  STEP 3 OF 4  --  Confirmation\n{SEP}")
 
     if not ask_confirmation(pending):
         print("\n  Exiting without downloading.")
-        return
+        sys.exit(0)
 
-    # Save metadata only after user confirms (creates DEST_FOLDER)
+    # Save metadata only after user confirms (creates DEST_FOLDER if not exists)
     DEST_FOLDER.mkdir(parents=True, exist_ok=True)
-    save_csv(zips, DEST_FOLDER)
-    save_json(zips, DEST_FOLDER)
+    save_csv(all_remote_zips, DEST_FOLDER)
+    save_json(all_remote_zips, DEST_FOLDER)
 
     # ------------------------------------------------------------------ #
     # Step 4: download + validate (with retry passes)                    #
@@ -1016,32 +978,36 @@ def main() -> None:
         if pass_num > 1:
             print(f"\n{SEP}\n  RETRY PASS {pass_num}/{MAX_PASSES}\n{SEP}")
 
-        # Recompute pending in case a previous pass partially succeeded
-        pending = [z for z in zips if _is_already_downloaded(z, DEST_FOLDER) is None]
+        # Recompute pending based on current state (some might have been downloaded)
+        pending = [
+            z for z in all_remote_zips
+            if _is_already_downloaded(z, DEST_FOLDER) is None
+        ]
 
         if not pending:
-            print(f"  All {len(zips)} ZIP(s) already present under {ROOT_FOLDER}. Done.")
+            print(f"  All {len(all_remote_zips)} ZIP(s) already present under {ROOT_FOLDER}. Done.")
             break
 
         print(f"  {len(pending)} ZIP(s) to download in this pass.")
 
-        dl_summary = download_all(zips, DEST_FOLDER, session)
+        dl_summary = download_all(pending, DEST_FOLDER, session)
         print_download_summary(dl_summary, DEST_FOLDER)
 
-        val_summary = validate_and_repair(zips, DEST_FOLDER, session, max_attempts=3)
+        val_summary = validate_and_repair(all_remote_zips, DEST_FOLDER, session, max_attempts=3)
         print_validation_summary(val_summary)
 
-        remaining = len(val_summary["failed"]) + len(val_summary["missing"])
-        if remaining == 0:
+        remaining_failures = len(val_summary["failed"]) + len(val_summary["missing"])
+        if remaining_failures == 0:
             print("\n  All files downloaded and validated successfully. Done.")
             break
 
-        print(f"\n  {remaining} file(s) still incomplete after pass {pass_num}.")
+        print(f"\n  {remaining_failures} file(s) still incomplete after pass {pass_num}.")
         if pass_num < MAX_PASSES:
             print(f"  Retrying in {RETRY_DELAY}s...")
             time.sleep(RETRY_DELAY)
     else:
         print(f"\n  Reached {MAX_PASSES} passes. Check validation_report.json for details.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -199,8 +199,13 @@ _BIOME_TO_EN: dict[str, str] = {
     "Pampa":           "Pampa",
 }
 _AMAZON_DIRS = {"Amazon Biome", "Legal Amazon"}
-# Keywords that identify yearly deforestation categories
-_DEFOR_KEYWORDS = ("yearly", "defor", "anual", "desmat")
+# Keywords in the ZIP stem or layer name that identify deforestation layers
+_DEFOR_KEYWORDS = ("deforestation", "desmatamento", "desmat")
+# Keywords that identify auxiliary layers to skip (not deforestation measurements)
+_AUX_KEYWORDS   = ("border", "boundary", "hydrography", "hydro",
+                   "indigenous_area", "conservation_units", "settlement",
+                   "quilombola", "terra_indigena", "unidade_conservacao",
+                   "uc_", "biome_border", "limite", "carbon", "biomass")
 # Candidate column names (area in km², checked in priority order)
 _AREA_COLS = ("areakm", "area_km", "area_km2", "areakm2", "area")
 # Candidate column names for year
@@ -326,39 +331,44 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
 
     print(f"  [data] Total parquet files found: {len(all_parquets)}")
 
-    # Group parquet files by biome name + require a yearly-deforestation category.
-    # Scan every path component: find the first part that matches a known biome name,
-    # then treat the next part as the category.
+    # Group parquet files by biome name.
+    # Strategy: scan the full relative path for a known biome name AND a
+    # deforestation keyword (anywhere in zip-stem or layer name).
+    # Exclude paths that contain auxiliary-data keywords.
     biome_files: dict[str, list[Path]] = {}
     for pf in all_parquets:
         try:
-            parts = pf.relative_to(geoparquet_dir).parts
-            biome_dir = None
-            category  = ""
-            for i, part in enumerate(parts[:-1]):   # skip filename
-                if part in _BIOME_TO_PT:
-                    biome_dir = part
-                    category  = parts[i + 1] if i + 1 < len(parts) - 1 else ""
-                    break
+            parts     = pf.relative_to(geoparquet_dir).parts
+            path_low  = "/".join(p.lower() for p in parts)
+
+            # Must contain at least one deforestation keyword
+            if not any(k in path_low for k in _DEFOR_KEYWORDS):
+                continue
+
+            # Must NOT be an auxiliary layer
+            if any(k in path_low for k in _AUX_KEYWORDS):
+                continue
+
+            # Find the known biome directory
+            biome_dir = next((p for p in parts[:-1] if p in _BIOME_TO_PT), None)
             if not biome_dir:
                 continue
-            if not any(k in category.lower() for k in _DEFOR_KEYWORDS):
-                continue
+
             biome_files.setdefault(biome_dir, []).append(pf)
         except (ValueError, IndexError):
             continue
 
     if not biome_files:
-        # Print a sample of paths found so the user can debug the structure
         sample = "\n    ".join(
             str(p.relative_to(geoparquet_dir)) for p in all_parquets[:8]
         )
         raise RuntimeError(
-            "Parquet files exist but none matched a known biome + yearly category.\n"
+            "Parquet files exist but none matched a known biome + deforestation keyword.\n"
             f"  directory: {geoparquet_dir}\n"
             f"  sample paths:\n    {sample}\n"
             f"  known biome names: {sorted(_BIOME_TO_PT)}\n"
-            f"  category keywords: {_DEFOR_KEYWORDS}"
+            f"  deforestation keywords searched: {_DEFOR_KEYWORDS}\n"
+            f"  auxiliary keywords excluded:     {_AUX_KEYWORDS}"
         )
 
     print(f"  [data] Biome folders found: {sorted(biome_files)}")

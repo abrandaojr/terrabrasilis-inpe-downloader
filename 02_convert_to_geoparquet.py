@@ -229,21 +229,39 @@ def _gpkg_layers(zip_path: Path, internal: str) -> list[str]:
     )
     try:
         return [str(row[0]) for row in pyogrio.list_layers(uri)]
-    except Exception:
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
         return []
 
 
 def build_manifest(zip_files: list[Path]) -> list[Job]:
-    """Inspect zip_files and return the complete conversion manifest."""
+    """Inspect zip_files and return the complete conversion manifest.
+
+    Fast path: if a ZIP's output directory already exists and contains
+    non-empty converted files, the ZIP is skipped entirely.  This avoids
+    the slow pyogrio.list_layers() call for already-processed archives.
+    """
     gpkg_jobs: list[Job] = []
     shp_jobs:  list[Job] = []
     tif_jobs:  list[Job] = []
+    skipped = 0
 
     bar = tqdm(zip_files, desc="  scanning", unit="zip", ncols=80, leave=True)
     for zip_path in bar:
         bar.set_postfix_str(zip_path.name[:40])
         rel_dir  = str(zip_path.parent.relative_to(_SOURCE_DIR))
         zip_stem = zip_path.stem
+
+        # ── Fast path: skip ZIPs whose output directory has converted files ──
+        out_dir = _DEST_DIR / rel_dir / zip_stem
+        if out_dir.exists() and any(
+            p.stat().st_size > 0
+            for p in out_dir.rglob("*")
+            if p.suffix in (".parquet", ".tif")
+        ):
+            skipped += 1
+            continue
 
         try:
             names = zipfile.ZipFile(zip_path).namelist()
@@ -294,6 +312,8 @@ def build_manifest(zip_files: list[Path]) -> list[Job]:
             ))
 
     bar.close()
+    if skipped:
+        print(f"  [scan] {skipped} ZIP(s) skipped — output already exists")
     return gpkg_jobs + shp_jobs + tif_jobs
 
 # ---------------------------------------------------------------------------

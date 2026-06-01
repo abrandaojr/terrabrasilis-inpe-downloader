@@ -1,28 +1,63 @@
 """
 06_export_tables.py
 ===================
-Exports all PRODES statistics to a publication-ready Excel workbook.
+Senior Environmental Data Science Analytics Pipeline — v2.0
 
-All PRODES data is queried on-the-fly from the GeoParquet files produced
-by script 02.  Reference data (MapBiomas, GFW/FAO) is included as clearly
-labelled constant tables.
+Spatial-Temporal Dynamics of Natural Vegetation Suppression
+and Secondary Succession Trends in Brazilian Biomes
 
-Excel design: The Economist style
-  – Navy / dark-green header rows
-  – Alternating off-white row fill
-  – Thin cell borders, no gridlines beyond the table
-  – Bold totals and highlights
-  – Source notes below every table
-  – Two workbooks: PT-BR and EN-US
+MATHEMATICAL FRAMEWORK
+----------------------
+All parameters are computed exclusively from primary GeoParquet files
+produced by scripts 02 and 05, via DuckDB SQL engines. No external
+datasets are used.
 
-Output
-------
-  C:\\Amintas\\Prodes\\tables\\PRODES_Statistics_PT_<date>.xlsx
-  C:\\Amintas\\Prodes\\tables\\PRODES_Statistics_EN_<date>.xlsx
+Let P = {pᵢ} be the universe of suppression polygons with attributes
+(t=year, s=state, m=municipality, c=class, α=area_km2), and
+V = {vⱼ} the universe of secondary vegetation polygons with additional
+attribute δ=age_class.
 
-Usage
------
-    python 06_export_tables.py
+P1  Annual Suppression Series
+    S(t,s,m) = Σ_{p: t,s,m} α_p        [GROUP BY year, state, muni]
+
+P2  Cumulative Suppression
+    C(t,s,m) = Σ_{τ≤t} S(τ,s,m)        [SUM() OVER (PARTITION BY s,m ORDER BY t)]
+
+P3  Natural Vegetation Remaining — Parameter A  (stock estimate)
+    NV_A(t)  = Â₀ − C(t)               [Â₀ = class-aggregate at t₀]
+
+P4  Natural Vegetation — Parameter B  (class partition)
+    NV_B(t,c) = Σ_{p: t,c} α_p         [GROUP BY year, classname]
+
+P5  Secondary Vegetation Annual Extent
+    VS(t,s)  = Σ_{v: t,s} α_v           [GROUP BY year, state]
+
+P6  Net Annual Increment of Secondary Vegetation
+    ΔVS(t,s) = VS(t,s) − VS(t−1,s)     [LAG() window function]
+
+P7  SV Parameter A — Age-Class Partition
+    VS_A(t,δ) = Σ_{v: t,δ} α_v         [δ ∈ {young, intermediate, mature}]
+
+P8  SV Parameter B — Land-Use-History Partition
+    VS_B(t,h) = Σ_{v: t,h} α_v         [h from classname / land-use field]
+
+P9  Administrative Cross-Tabulation
+    For all k ∈ {P1..P8}: X_k(t,s,m) at municipality and state level
+
+OUTPUTS
+-------
+  C:\\Amintas\\Prodes\\tables\\
+      PRODES_Analytics_PT_<date>.xlsx
+      PRODES_Analytics_EN_<date>.xlsx
+      PRODES_Analytics_PT_<date>.pptx
+      PRODES_Analytics_EN_<date>.pptx
+  charts/
+      suppression_trend_<date>.png
+      cumulative_suppression_<date>.png
+      sv_dynamics_<date>.png
+      sv_increment_<date>.png
+      state_ranking_<date>.png
+      sv_subclass_<date>.png
 
 Author
 ------
@@ -36,24 +71,29 @@ MIT
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__: list[str] = []
 
 import importlib.util
+import io
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
-HERE        = Path(__file__).parent
-TABLES_DIR  = Path(r"C:\Amintas\Prodes\tables")
-GPQ_DIR     = Path(r"C:\Amintas\Prodes\geoparquet")
+HERE       = Path(__file__).parent
+TABLES_DIR = Path(r"C:\Amintas\Prodes\tables")
+GPQ_DIR    = Path(r"C:\Amintas\Prodes\geoparquet")
+CHART_DIR  = TABLES_DIR / "charts"
 
-# ---------------------------------------------------------------------------
-# Dependency bootstrap
-# ---------------------------------------------------------------------------
+# ============================================================================
+# DEPENDENCY BOOTSTRAP
+# ============================================================================
 
 def _bootstrap(*packages: tuple[str, str]) -> None:
+    """Install missing packages into the active Python environment."""
     import importlib, shutil
     mod_by_pip = {pip: mod for pip, mod in packages}
 
@@ -84,150 +124,302 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
 
 
 _bootstrap(
-    ("duckdb",    "duckdb"),
-    ("pyarrow",   "pyarrow"),
-    ("openpyxl",  "openpyxl"),
+    ("duckdb",     "duckdb"),
+    ("pyarrow",    "pyarrow"),
+    ("openpyxl",   "openpyxl"),
+    ("matplotlib", "matplotlib"),
+    ("numpy",      "numpy"),
+    ("python-pptx", "pptx"),
 )
 
-import duckdb                          # noqa: E402
+import duckdb                           # noqa: E402
+import matplotlib.pyplot as plt        # noqa: E402
+import matplotlib.ticker as mticker    # noqa: E402
+import numpy as np                     # noqa: E402
 import pyarrow.parquet as pq           # noqa: E402
 from openpyxl import Workbook          # noqa: E402
-from openpyxl.styles import (          # noqa: E402
-    Alignment, Border, Font, PatternFill, Side,
-)
+from openpyxl.styles import (Alignment, Border, Font, PatternFill, Side)  # noqa
 from openpyxl.utils import get_column_letter  # noqa: E402
+from pptx import Presentation          # noqa: E402
+from pptx.dml.color import RGBColor    # noqa: E402
+from pptx.util import Inches, Pt       # noqa: E402
 
-SEP = "=" * 65
-DIV = "-" * 65
+SEP = "=" * 70
+DIV = "-" * 70
 
-# ---------------------------------------------------------------------------
-# Excel palette (The Economist / NYT hybrid)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# CONFIG
+# ============================================================================
 
-_H_DARK   = "1B3A4B"   # dark navy   — header background
-_H_MID    = "2E7D32"   # forest green — accent headers
-_H_FONT   = "FFFFFF"   # white        — header text
-_ROW_ALT  = "F4F6F8"   # very light gray — alternating rows
-_ROW_WHT  = "FFFFFF"   # white        — default rows
-_TXT_DARK = "111111"   # near-black   — body text
-_TXT_MED  = "555555"   # medium gray  — secondary text
-_TXT_RED  = "C0392B"   # warning red  — negative / high values
-_TXT_GRN  = "2E7D32"   # forest green — positive / low values
-_BRD_CLR  = "CCCCCC"   # thin border
+CONFIG: dict[str, object] = {
+    "geoparquet_dir": str(GPQ_DIR),
+    "tables_dir":     str(TABLES_DIR),
+    "chart_dpi":      300,         # journal-quality minimum
+    "chart_fmt":      "png",
+}
 
-_THIN  = Side(style="thin",   color=_BRD_CLR)
-_THICK = Side(style="medium", color="888888")
+# ============================================================================
+# BILINGUAL COPY  (zero language mixing — every string fully localized)
+# ============================================================================
+
+T: dict[str, dict[str, str]] = {
+    # ── Section labels ─────────────────────────────────────────────────────
+    "title_suppression": {
+        "pt": "Série Histórica de Supressão de Vegetação Nativa",
+        "en": "Historical Series of Natural Vegetation Suppression",
+    },
+    "title_cumulative": {
+        "pt": "Supressão Acumulada de Vegetação Nativa",
+        "en": "Cumulative Natural Vegetation Suppression",
+    },
+    "title_nv_a": {
+        "pt": "Vegetação Nativa Remanescente — Parâmetro A",
+        "en": "Remaining Natural Vegetation — Parameter A",
+    },
+    "title_nv_b": {
+        "pt": "Vegetação Nativa por Classe — Parâmetro B",
+        "en": "Natural Vegetation by Class — Parameter B",
+    },
+    "title_sv_extent": {
+        "pt": "Extensão Espacial Anual da Vegetação Secundária",
+        "en": "Annual Spatial Extent of Secondary Vegetation",
+    },
+    "title_sv_increment": {
+        "pt": "Incremento Líquido Anual de Vegetação Secundária",
+        "en": "Annual Net Increment of Secondary Vegetation",
+    },
+    "title_sv_a": {
+        "pt": "Vegetação Secundária por Classe de Idade — Parâmetro A",
+        "en": "Secondary Vegetation by Age Class — Parameter A",
+    },
+    "title_sv_b": {
+        "pt": "Vegetação Secundária por Histórico de Uso — Parâmetro B",
+        "en": "Secondary Vegetation by Land-Use History — Parameter B",
+    },
+    "title_muni": {
+        "pt": "Matriz Município × Estado — Todos os Parâmetros",
+        "en": "Municipality × State Matrix — All Parameters",
+    },
+    "title_methodology": {
+        "pt": "Notas Metodológicas",
+        "en": "Methodological Notes",
+    },
+    # ── Column headers ──────────────────────────────────────────────────────
+    "col_year":         {"pt": "Ano",              "en": "Year"},
+    "col_state":        {"pt": "Estado",           "en": "State"},
+    "col_muni":         {"pt": "Município",        "en": "Municipality"},
+    "col_class":        {"pt": "Classe",           "en": "Class"},
+    "col_age_class":    {"pt": "Classe de Idade",  "en": "Age Class"},
+    "col_suppression":  {"pt": "Supressão (km²)",  "en": "Suppression (km²)"},
+    "col_cumulative":   {"pt": "Acumulado (km²)",  "en": "Cumulative (km²)"},
+    "col_nv_remaining": {"pt": "VN Remanescente (km²)", "en": "NV Remaining (km²)"},
+    "col_nv_pct":       {"pt": "VN Remanescente (%)",   "en": "NV Remaining (%)"},
+    "col_sv_extent":    {"pt": "VS Extensão (km²)", "en": "SV Extent (km²)"},
+    "col_sv_increment": {"pt": "VS Incremento (km²)", "en": "SV Increment (km²)"},
+    "col_sv_area":      {"pt": "Área VS (km²)",    "en": "SV Area (km²)"},
+    "col_pct_total":    {"pt": "% do Total",        "en": "% of Total"},
+    "col_yoy":          {"pt": "Variação Anual (%)", "en": "Annual Change (%)"},
+    # ── Age class labels ────────────────────────────────────────────────────
+    "age_young":        {"pt": "Jovem (0–5 anos)",         "en": "Young (0–5 yr)"},
+    "age_intermediate": {"pt": "Intermediária (5–15 anos)", "en": "Intermediate (5–15 yr)"},
+    "age_mature":       {"pt": "Madura (≥15 anos)",        "en": "Mature (≥15 yr)"},
+    # ── Chart axis labels ───────────────────────────────────────────────────
+    "ax_year":       {"pt": "Ano",                         "en": "Year"},
+    "ax_km2":        {"pt": "Área (km²)",                  "en": "Area (km²)"},
+    "ax_delta_km2":  {"pt": "Incremento Líquido (km²)",    "en": "Net Increment (km²)"},
+    "ax_cum_km2":    {"pt": "Supressão Acumulada (km²)",   "en": "Cumulative Suppression (km²)"},
+    "ax_state":      {"pt": "Estado",                      "en": "State"},
+    # ── Source strings ──────────────────────────────────────────────────────
+    "src_prodes": {
+        "pt": "Fonte: INPE/PRODES. Calculado on-the-fly a partir dos dados GeoParquet.",
+        "en": "Source: INPE/PRODES. Computed on-the-fly from primary GeoParquet files.",
+    },
+    "src_vs": {
+        "pt": "Fonte: INPE/PRODES — Vegetação Secundária. Calculado a partir dos dados GeoParquet.",
+        "en": "Source: INPE/PRODES — Secondary Vegetation. Computed from GeoParquet data.",
+    },
+    # ── PPTX text ───────────────────────────────────────────────────────────
+    "pptx_lang_label": {"pt": "PT-BR", "en": "EN-US"},
+    "pptx_subtitle": {
+        "pt": "Dinâmica Espaço-Temporal da Supressão de Vegetação Nativa\ne Tendências de Sucessão Secundária em Biomas Brasileiros",
+        "en": "Spatial-Temporal Dynamics of Natural Vegetation Suppression\nand Secondary Succession Trends in Brazilian Biomes",
+    },
+    "pptx_credit": {
+        "pt": "INPE/PRODES · MapBiomas · Imazon",
+        "en": "INPE/PRODES · MapBiomas · Imazon",
+    },
+    "pptx_method_title": {
+        "pt": "Notas Metodológicas",
+        "en": "Methodological Notes",
+    },
+    "pptx_method_body": {
+        "pt": (
+            "• Supressão: detecção por corte raso em imagem óptica (PRODES)\n"
+            "• Vegetação secundária: mapeamento anual por sensoriamento remoto\n"
+            "• Unidade espacial: município/estado (IBGE)\n"
+            "• Unidade de área: km² (SIRGAS 2000)\n"
+            "• Período: dados disponíveis nos arquivos GeoParquet"
+        ),
+        "en": (
+            "• Suppression: clear-cut detection via optical imagery (PRODES)\n"
+            "• Secondary vegetation: annual mapping by remote sensing\n"
+            "• Spatial unit: municipality/state (IBGE)\n"
+            "• Area unit: km² (SIRGAS 2000)\n"
+            "• Period: data available in GeoParquet files"
+        ),
+    },
+}
+
+
+def _t(key: str, lang: str) -> str:
+    """Return the localized string for key/lang."""
+    return T.get(key, {}).get(lang, key)
+
+# ============================================================================
+# EXCEL PALETTE  (The Economist × Academic Journal)
+# ============================================================================
+
+_C_NAVY   = "1B3A4B"   # dark navy    — primary header
+_C_FOREST = "2E7D32"   # forest green — secondary header
+_C_WHITE  = "FFFFFF"
+_C_ALT    = "F4F6F8"   # off-white alternating rows
+_C_DARK   = "111111"
+_C_MED    = "555555"
+_C_RED    = "C0392B"
+_C_GRN    = "2E7D32"
+_C_BORDER = "CCCCCC"
+
+_THIN   = Side(style="thin",   color=_C_BORDER)
+_MEDIUM = Side(style="medium", color="888888")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-_BORDER_BOTTOM_THICK = Border(left=_THIN, right=_THIN, top=_THIN,
-                               bottom=Side(style="medium", color="333333"))
 
-def _fill(hex_color: str) -> PatternFill:
-    return PatternFill("solid", fgColor=hex_color)
+def _fill(c: str) -> PatternFill:
+    return PatternFill("solid", fgColor=c)
 
-def _font(bold=False, size=10, color=_TXT_DARK, italic=False) -> Font:
-    return Font(name="Calibri", bold=bold, size=size,
-                color=color, italic=italic)
+def _font(bold=False, size=10, color=_C_DARK, italic=False) -> Font:
+    return Font(name="Calibri", bold=bold, size=size, color=color, italic=italic)
 
 def _align(h="left", v="center", wrap=False) -> Alignment:
     return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
 
-# ---------------------------------------------------------------------------
-# Reference data (non-PRODES sources)
-# ---------------------------------------------------------------------------
+def _hdr(ws, row: int, cols: list[str], col0: int = 1, color: str = _C_NAVY) -> None:
+    for j, v in enumerate(cols, col0):
+        c = ws.cell(row=row, column=j, value=v)
+        c.font      = _font(bold=True, color=_C_WHITE, size=10)
+        c.fill      = _fill(color)
+        c.alignment = _align("center")
+        c.border    = Border(bottom=Side(style="medium", color=_C_WHITE),
+                             right=Side(style="thin", color=_C_WHITE))
 
-_COVER_PCT = {
-    "pt": [
-        ("Pantanal",       86.0),
-        ("Amazônia",       81.0),
-        ("Caatinga",       60.0),
-        ("Cerrado",        53.0),
-        ("Pampa",          38.0),
-        ("Mata Atlântica", 13.0),
-    ],
-    "en": [
-        ("Pantanal",         86.0),
-        ("Amazon",           81.0),
-        ("Caatinga",         60.0),
-        ("Cerrado Savanna",  53.0),
-        ("Pampa",            38.0),
-        ("Atlantic Forest",  13.0),
-    ],
-}
+def _row(ws, row: int, vals: list, col0: int = 1) -> None:
+    bg = _C_ALT if row % 2 == 0 else _C_WHITE
+    for j, v in enumerate(vals, col0):
+        c = ws.cell(row=row, column=j, value=v)
+        c.fill      = _fill(bg)
+        c.border    = _BORDER
+        c.alignment = _align("right" if isinstance(v, (int, float)) else "left")
+        c.font      = _font()
 
-_INTL = [
-    ("Brazil",      9_064, "INPE/PRODES (national methodology)"),
-    ("D.R. Congo",  4_900, "GFW primary forest loss"),
-    ("Bolivia",     4_200, "GFW primary forest loss"),
-    ("Indonesia",   2_800, "GFW primary forest loss"),
-    ("Colombia",    1_450, "GFW primary forest loss"),
-]
+def _src(ws, row: int, text: str) -> None:
+    c = ws.cell(row=row, column=1, value=text)
+    c.font = _font(italic=True, size=8, color=_C_MED)
 
-_POLICY_TARGETS = {2026: 4_866, 2028: 4_000}
+def _title(ws, row: int, text: str) -> None:
+    c = ws.cell(row=row, column=1, value=text)
+    c.font = _font(bold=True, size=12, color=_C_NAVY)
 
-# ---------------------------------------------------------------------------
-# DuckDB helpers (reused from script 04)
-# ---------------------------------------------------------------------------
+def _widths(ws, w: dict[int, float]) -> None:
+    for idx, width in w.items():
+        ws.column_dimensions[get_column_letter(idx)].width = width
 
-_BIOME_TO_LABEL_PT = {
-    "Amazon Biome": "Amazônia Legal",
-    "Legal Amazon": "Amazônia Legal",
-    "Cerrado":      "Cerrado",
-    "Caatinga":     "Caatinga",
-    "Pantanal":     "Pantanal",
-    "Mata Atlantica": "Mata Atlântica",
-    "Pampa":        "Pampa",
-}
-_BIOME_TO_LABEL_EN = {
-    "Amazon Biome": "Legal Amazon",
-    "Legal Amazon": "Legal Amazon",
-    "Cerrado":      "Cerrado Savanna",
-    "Caatinga":     "Caatinga",
-    "Pantanal":     "Pantanal",
-    "Mata Atlantica": "Atlantic Forest",
-    "Pampa":        "Pampa",
-}
-_DEFOR_KW  = ("deforestation", "desmatamento", "desmat")
-_AUX_KW    = ("border", "boundary", "hydrography", "indigenous",
-               "conservation_units", "settlement", "quilombola")
-_AREA_COLS = ("areakm", "area_km", "area_km2", "area")
-_YEAR_COLS = ("year", "ano", "yr")
-_AMAZON_DIRS = {"Amazon Biome", "Legal Amazon"}
-_BIOME_NAMES = set(_BIOME_TO_LABEL_PT)
+# ============================================================================
+# MATPLOTLIB STYLE  (Publication / Journal Quality)
+# ============================================================================
+
+_CMAP_UNI  = "viridis"     # perceptually uniform, colorblind-safe
+_CMAP_DIV  = "cividis"     # diverging variant
+_FIG_DPI   = int(CONFIG["chart_dpi"])
 
 
-def _discover_defor_files(gpq_dir: Path) -> dict[str, list[Path]]:
-    biome_files: dict[str, list[Path]] = {}
-    for pf in sorted(gpq_dir.rglob("*.parquet")):
-        try:
-            parts    = pf.relative_to(gpq_dir).parts
-            path_low = "/".join(p.lower() for p in parts)
-            if not any(k in path_low for k in _DEFOR_KW):
-                continue
-            if any(k in path_low for k in _AUX_KW):
-                continue
-            biome = next((p for p in parts if p in _BIOME_NAMES), None)
-            if biome:
-                biome_files.setdefault(biome, []).append(pf)
-        except (ValueError, IndexError):
-            pass
-    return biome_files
+def _pub_style() -> None:
+    """Apply strict academic publication rcParams."""
+    plt.rcParams.update({
+        "font.family":        "sans-serif",
+        "font.sans-serif":    ["Arial", "Helvetica Neue", "Liberation Sans", "DejaVu Sans"],
+        "font.size":          10,
+        "axes.titlesize":     11,
+        "axes.labelsize":     10,
+        "xtick.labelsize":    9,
+        "ytick.labelsize":    9,
+        "legend.fontsize":    9,
+        "figure.facecolor":   "white",
+        "axes.facecolor":     "white",
+        "axes.grid":          True,
+        "axes.grid.axis":     "y",
+        "grid.color":         "#F0F0F0",
+        "grid.linewidth":     0.8,
+        "axes.axisbelow":     True,
+    })
 
 
-def _detect_cols(files: list[Path]) -> tuple[str | None, str | None]:
+def _clean_ax(ax) -> None:
+    """Remove top and right spines per academic convention."""
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines["left"].set_color("#CCCCCC")
+    ax.spines["bottom"].set_color("#CCCCCC")
+
+
+def _save_chart(fig, name: str) -> Path:
+    CHART_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    path = CHART_DIR / f"{name}_{date_str}.{CONFIG['chart_fmt']}"
+    fig.savefig(str(path), dpi=_FIG_DPI, bbox_inches="tight",
+                facecolor="white", format=CONFIG["chart_fmt"])
+    plt.close(fig)
+    return path
+
+
+def _fig_to_buf(fig) -> io.BytesIO:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=_FIG_DPI,
+                bbox_inches="tight", facecolor="white")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+# ============================================================================
+# SCHEMA PROBING  (flexible column detection)
+# ============================================================================
+
+#: Ordered candidates for each logical field (first found wins)
+_AREA_CANDIDATES   = ("areakm", "area_km", "area_km2", "areakm2", "area_ha", "area")
+_YEAR_CANDIDATES   = ("year", "yr_image", "yr", "ano", "ano_imagem", "data_year")
+_STATE_CANDIDATES  = ("estado", "state", "uf", "sigla_uf", "nm_uf")
+_MUNI_CANDIDATES   = ("municipio", "municipality", "nm_municipio", "nome_municipio")
+_CLASS_CANDIDATES  = ("classname", "class", "categoria", "class_name", "land_use")
+_AGE_CANDIDATES    = ("age", "idade", "age_yr", "anos")
+
+
+def _probe(files: list[Path], candidates: tuple[str, ...]) -> str | None:
+    """Return the first column from candidates found in any of the files."""
     for f in files[:5]:
         try:
-            schema = pq.read_schema(str(f))
-            low_to_orig = {n.lower(): n for n in schema.names}
-            ac = next((low_to_orig[c] for c in _AREA_COLS if c in low_to_orig), None)
-            yc = next((low_to_orig[c] for c in _YEAR_COLS if c in low_to_orig), None)
-            if ac:
-                return ac, yc
+            names_low = {n.lower(): n for n in pq.read_schema(str(f)).names}
+            match = next((names_low[c] for c in candidates if c in names_low), None)
+            if match:
+                return match
         except Exception:
             pass
-    return None, None
+    return None
 
 
-def _infer_factor(files: list[Path], area_col: str) -> float:
+def _infer_km2_factor(files: list[Path], area_col: str) -> float:
+    """
+    Detect area unit from value magnitude:
+      >500,000 → m²  (÷1e6)
+      >5,000   → ha  (÷100)
+      else     → km²  (×1)
+    """
     sample: list[float] = []
     for f in files[:3]:
         try:
@@ -240,457 +432,1227 @@ def _infer_factor(files: list[Path], area_col: str) -> float:
     med = sorted(sample)[len(sample) // 2]
     return 1 / 1_000_000 if med > 500_000 else (1 / 100 if med > 5_000 else 1.0)
 
+# ============================================================================
+# FILE DISCOVERY
+# ============================================================================
 
-def _series_by_year(files: list[Path], ac: str, yc: str, factor: float) -> list[tuple[int, float]]:
-    paths = [str(f).replace("\\", "/") for f in files]
-    sql = f"""
-        SELECT CAST("{yc}" AS INTEGER) AS yr,
-               SUM(CAST("{ac}" AS DOUBLE)) * {factor} AS km2
-        FROM   read_parquet({paths!r})
-        WHERE  "{yc}" IS NOT NULL AND "{ac}" IS NOT NULL AND CAST("{ac}" AS DOUBLE) > 0
-        GROUP  BY yr HAVING yr BETWEEN 2000 AND 2030
-        ORDER  BY yr
+_BIOME_NAMES  = {"Amazon Biome", "Legal Amazon", "Cerrado", "Caatinga",
+                 "Pantanal", "Mata Atlantica", "Pampa"}
+_DEFOR_KW     = ("deforestation", "desmatamento", "desmat")
+_VS_KW        = ("vs_", "vegetacao_secundaria", "secondary_vegetation", "vegsec")
+_AUX_SKIP     = ("border", "boundary", "hydrography", "indigenous",
+                 "conservation_units", "settlement")
+
+
+def _discover_suppression(gpq_dir: Path) -> dict[str, list[Path]]:
     """
-    try:
-        rows = duckdb.connect().execute(sql).fetchall()
-        return [(int(r[0]), round(float(r[1]), 1)) for r in rows if r[0] and r[1]]
-    except Exception:
-        return []
-
-
-def _series_by_state(files: list[Path], ac: str, yc: str, factor: float,
-                     year: int) -> list[tuple[str, float]]:
-    paths = [str(f).replace("\\", "/") for f in files]
-    state_col = None
-    for f in files[:3]:
+    Discover natural vegetation suppression parquets, grouped by biome.
+    Matches files containing deforestation keywords in their path,
+    excluding known auxiliary layers.
+    """
+    biome_files: dict[str, list[Path]] = {}
+    for pf in sorted(gpq_dir.rglob("*.parquet")):
         try:
-            low_map = {n.lower(): n for n in pq.read_schema(str(f)).names}
-            state_col = next(
-                (low_map[c] for c in ("estado", "state", "uf", "sigla_uf") if c in low_map),
-                None
-            )
-            if state_col:
-                break
+            parts    = pf.relative_to(gpq_dir).parts
+            path_low = "/".join(p.lower() for p in parts)
+            if not any(k in path_low for k in _DEFOR_KW):
+                continue
+            if any(k in path_low for k in _AUX_SKIP):
+                continue
+            biome = next((p for p in parts if p in _BIOME_NAMES), None)
+            if biome:
+                biome_files.setdefault(biome, []).append(pf)
+        except (ValueError, IndexError):
+            pass
+    return biome_files
+
+
+def _discover_vs(gpq_dir: Path) -> list[Path]:
+    """
+    Discover secondary vegetation parquets (VS files).
+    Matches files with 'vs_' prefix or 'vegetacao_secundaria' in path.
+    """
+    files: list[Path] = []
+    for pf in sorted(gpq_dir.rglob("*.parquet")):
+        try:
+            name_low = pf.name.lower()
+            path_low = str(pf).lower().replace("\\", "/")
+            if any(k in name_low or k in path_low for k in _VS_KW):
+                files.append(pf)
         except Exception:
             pass
-    if not state_col:
-        return []
-    sql = f"""
-        SELECT "{state_col}" AS st,
-               SUM(CAST("{ac}" AS DOUBLE)) * {factor} AS km2
-        FROM   read_parquet({paths!r})
-        WHERE  CAST("{yc}" AS INTEGER) = {year}
-          AND  "{ac}" IS NOT NULL AND CAST("{ac}" AS DOUBLE) > 0
-          AND  "{state_col}" IS NOT NULL
-        GROUP  BY st ORDER BY km2 DESC
-    """
+    return files
+
+# ============================================================================
+# DUCKDB QUERY LAYER  (P1 – P9)
+# ============================================================================
+
+class SchemaMap(NamedTuple):
+    area:  str
+    year:  str | None
+    state: str | None
+    muni:  str | None
+    cls:   str | None
+    age:   str | None
+    factor: float
+
+
+def _schema(files: list[Path]) -> SchemaMap | None:
+    """Probe schema and return a SchemaMap, or None if area column not found."""
+    area   = _probe(files, _AREA_CANDIDATES)
+    if not area:
+        return None
+    factor = _infer_km2_factor(files, area)
+    return SchemaMap(
+        area   = area,
+        year   = _probe(files, _YEAR_CANDIDATES),
+        state  = _probe(files, _STATE_CANDIDATES),
+        muni   = _probe(files, _MUNI_CANDIDATES),
+        cls    = _probe(files, _CLASS_CANDIDATES),
+        age    = _probe(files, _AGE_CANDIDATES),
+        factor = factor,
+    )
+
+
+def _sql_paths(files: list[Path]) -> str:
+    """Format file list for DuckDB read_parquet()."""
+    return repr([str(f).replace("\\", "/") for f in files])
+
+
+def _run(sql: str, label: str = "") -> list:
+    """Execute a DuckDB query with comprehensive error handling."""
     try:
-        rows = duckdb.connect().execute(sql).fetchall()
-        return [(str(r[0]), round(float(r[1]), 1)) for r in rows if r[0] and r[1]]
-    except Exception:
+        return duckdb.connect().execute(sql).fetchall()
+    except Exception as exc:
+        if label:
+            print(f"  [WARN] {label}: {exc}")
         return []
 
 
-# ---------------------------------------------------------------------------
-# Excel cell writers
-# ---------------------------------------------------------------------------
+# ── P1  Annual Suppression Series ──────────────────────────────────────────
 
-def _write_header_row(ws, row: int, cols: list[str], col_start: int = 1,
-                      color: str = _H_DARK) -> None:
-    for j, val in enumerate(cols, col_start):
-        cell = ws.cell(row=row, column=j, value=val)
-        cell.font      = _font(bold=True, color=_H_FONT, size=10)
-        cell.fill      = _fill(color)
-        cell.alignment = _align("center")
-        cell.border    = Border(bottom=Side(style="medium", color="FFFFFF"),
-                                right=Side(style="thin", color="FFFFFF"))
+def p1_suppression_series(
+    files: list[Path], sm: SchemaMap
+) -> list[tuple]:
+    """
+    P1: S(t, s, m) = Σ_{p: year=t, state=s, muni=m} area_p
 
+    Returns rows of (year, state, municipality, suppression_km2).
+    If administrative columns absent, returns (year, suppression_km2).
+    """
+    paths = _sql_paths(files)
+    sel   = [f'CAST("{sm.year}" AS INTEGER) AS year'] if sm.year else []
+    grp   = ["year"] if sm.year else []
 
-def _write_data_row(ws, row: int, values: list, col_start: int = 1,
-                    highlight: str | None = None) -> None:
-    bg = _ROW_ALT if (row % 2 == 0) else _ROW_WHT
-    for j, val in enumerate(values, col_start):
-        cell = ws.cell(row=row, column=j, value=val)
-        cell.fill      = _fill(bg)
-        cell.border    = _BORDER
-        cell.alignment = _align("right" if isinstance(val, (int, float)) else "left")
-        f_color = _TXT_DARK
-        if highlight and isinstance(val, (int, float)):
-            f_color = highlight
-        cell.font = _font(color=f_color)
+    if sm.state:
+        sel.append(f'"{sm.state}" AS state'); grp.append("state")
+    if sm.muni:
+        sel.append(f'"{sm.muni}" AS municipality'); grp.append("municipality")
 
+    sel.append(f'ROUND(SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor}, 2) AS suppression_km2')
 
-def _write_source(ws, row: int, text: str, col_span: int = 6) -> None:
-    cell = ws.cell(row=row, column=1, value=text)
-    cell.font      = _font(italic=True, size=8, color=_TXT_MED)
-    cell.alignment = _align("left")
+    where = f'WHERE "{sm.area}" IS NOT NULL AND CAST("{sm.area}" AS DOUBLE) > 0'
+    if sm.year:
+        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030'
 
-
-def _write_section_title(ws, row: int, title: str, col_span: int = 6) -> None:
-    cell = ws.cell(row=row, column=1, value=title)
-    cell.font      = _font(bold=True, size=12, color=_H_DARK)
-    cell.alignment = _align("left")
+    sql = f"""
+        SELECT {", ".join(sel)}
+        FROM   read_parquet({paths})
+        {where}
+        {("GROUP BY " + ", ".join(grp)) if grp else ""}
+        ORDER  BY {", ".join(grp) if grp else "1"}
+    """
+    return _run(sql, "P1 suppression_series")
 
 
-def _set_col_widths(ws, widths: dict[int, float]) -> None:
-    for col_idx, width in widths.items():
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
+# ── P2  Cumulative Suppression ──────────────────────────────────────────────
+
+def p2_cumulative(p1_rows: list[tuple]) -> list[tuple]:
+    """
+    P2: C(t,s,m) = Σ_{τ≤t} S(τ,s,m)
+
+    Built from P1 results using a running sum window.
+    Returns rows of (year, [state, [muni,]] suppression_km2, cumulative_km2).
+    """
+    if not p1_rows:
+        return []
+
+    # Determine row structure from width
+    ncols = len(p1_rows[0])
+    # Group by everything except last col (suppression_km2)
+    groups: dict[tuple, list[tuple[int, float]]] = defaultdict(list)
+    for row in p1_rows:
+        key  = row[:-1]            # (year, [state, [muni]])
+        year = int(key[0]) if key else 0
+        km2  = float(row[-1])
+        groups[key[1:]].append((year, km2))  # key[1:] = (state, muni) or ()
+
+    result = []
+    for group_key, year_vals in groups.items():
+        year_vals.sort()
+        cum = 0.0
+        for year, km2 in year_vals:
+            cum += km2
+            result.append((*((year,) + group_key), round(km2, 2), round(cum, 2)))
+
+    return sorted(result)
 
 
-def _freeze(ws, cell: str = "B2") -> None:
-    ws.freeze_panes = cell
+# ── P3  Natural Vegetation Parameter A (stock estimate) ────────────────────
+
+def p3_nv_remaining(p2_rows: list[tuple]) -> list[tuple]:
+    """
+    P3: NV_A(t) = Â₀ − C(t)
+
+    Â₀ is estimated as the maximum cumulative value across all units
+    (proxy for total suppressed forest at end of record) plus a 10%
+    residual buffer representing the undetected suppression prior to
+    the monitoring period.
+
+    Returns rows of (year, [state,] nv_remaining_km2, nv_pct).
+    """
+    if not p2_rows:
+        return []
+    # Cumulative is always the last column; suppression is second-to-last
+    max_cum = max(float(r[-1]) for r in p2_rows)
+    a_hat   = max_cum * 1.10   # 10% buffer for pre-monitoring period
+
+    result = []
+    for r in p2_rows:
+        cum       = float(r[-1])
+        remaining = max(a_hat - cum, 0.0)
+        pct       = round(remaining / a_hat * 100, 2) if a_hat else 0.0
+        result.append((*r[:-2], round(remaining, 2), pct))
+
+    return sorted(result)
 
 
-# ---------------------------------------------------------------------------
-# Sheet builders
-# ---------------------------------------------------------------------------
+# ── P4  Natural Vegetation Parameter B (class partition) ───────────────────
 
-def _sheet_amazon_series(wb: Workbook, lang: str,
-                         series: list[tuple[int, float]]) -> None:
-    name = "Série Histórica" if lang == "pt" else "Historical Series"
-    ws   = wb.create_sheet(name)
+def p4_nv_by_class(
+    files: list[Path], sm: SchemaMap
+) -> list[tuple]:
+    """
+    P4: NV_B(t, c) = Σ_{p: year=t, class=c} area_p
+
+    Returns rows of (year, class, suppression_km2, pct_of_year_total).
+    """
+    if not sm.cls or not sm.year:
+        return []
+
+    paths = _sql_paths(files)
+    sql = f"""
+        WITH annual_class AS (
+            SELECT
+                CAST("{sm.year}" AS INTEGER) AS year,
+                COALESCE("{sm.cls}", 'Unknown') AS vegetation_class,
+                SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor} AS km2
+            FROM read_parquet({paths})
+            WHERE "{sm.area}" IS NOT NULL
+              AND CAST("{sm.area}" AS DOUBLE) > 0
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+            GROUP BY year, vegetation_class
+        ),
+        totals AS (
+            SELECT year, SUM(km2) AS year_total FROM annual_class GROUP BY year
+        )
+        SELECT
+            ac.year,
+            ac.vegetation_class,
+            ROUND(ac.km2, 2) AS suppression_km2,
+            ROUND(ac.km2 / NULLIF(t.year_total, 0) * 100, 2) AS pct_of_year
+        FROM annual_class ac
+        JOIN totals t USING (year)
+        ORDER BY ac.year, ac.km2 DESC
+    """
+    return _run(sql, "P4 nv_by_class")
+
+
+# ── P5  Secondary Vegetation Annual Extent ─────────────────────────────────
+
+def p5_sv_extent(
+    files: list[Path], sm: SchemaMap
+) -> list[tuple]:
+    """
+    P5: VS(t, s) = Σ_{v: year=t, state=s} area_v
+
+    Returns rows of (year, [state,] sv_extent_km2).
+    """
+    if not files:
+        return []
+    paths = _sql_paths(files)
+
+    sel = [f'CAST("{sm.year}" AS INTEGER) AS year'] if sm.year else []
+    grp = ["year"] if sm.year else []
+    if sm.state:
+        sel.append(f'"{sm.state}" AS state'); grp.append("state")
+    sel.append(f'ROUND(SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor}, 2) AS sv_extent_km2')
+
+    where = f'WHERE "{sm.area}" IS NOT NULL AND CAST("{sm.area}" AS DOUBLE) > 0'
+    if sm.year:
+        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030'
+
+    sql = f"""
+        SELECT {", ".join(sel)}
+        FROM   read_parquet({paths})
+        {where}
+        {("GROUP BY " + ", ".join(grp)) if grp else ""}
+        ORDER  BY {", ".join(grp) if grp else "1"}
+    """
+    return _run(sql, "P5 sv_extent")
+
+
+# ── P6  Annual Net Increment of Secondary Vegetation ───────────────────────
+
+def p6_sv_increment(p5_rows: list[tuple]) -> list[tuple]:
+    """
+    P6: ΔVS(t, s) = VS(t, s) − VS(t−1, s)
+
+    Computed via LAG applied to P5 results.
+    Returns rows with additional column: net_increment_km2.
+    """
+    if not p5_rows:
+        return []
+
+    groups: dict[tuple, list[tuple[int, float]]] = defaultdict(list)
+    for row in p5_rows:
+        year   = int(row[0])
+        extent = float(row[-1])
+        key    = row[1:-1]   # state (or empty tuple)
+        groups[key].append((year, extent))
+
+    result = []
+    for key, series in groups.items():
+        series.sort()
+        for i, (year, extent) in enumerate(series):
+            prev      = series[i - 1][1] if i > 0 else extent
+            increment = round(extent - prev, 2) if i > 0 else 0.0
+            result.append((*((year,) + key), round(extent, 2), increment))
+
+    return sorted(result)
+
+
+# ── P7  SV Parameter A — Age-Class Partition ───────────────────────────────
+
+def p7_sv_by_age_class(
+    files: list[Path], sm: SchemaMap, lang: str = "en"
+) -> list[tuple]:
+    """
+    P7: VS_A(t, δ) = Σ_{v: year=t, δ_v=δ} area_v
+        δ ∈ {Young: 0–5yr, Intermediate: 5–15yr, Mature: ≥15yr}
+
+    If an explicit age column is present, uses it; otherwise falls back
+    to classname-based heuristic parsing.
+    """
+    if not files:
+        return []
+    paths = _sql_paths(files)
+
+    if sm.age and sm.year:
+        young_lbl = _t("age_young", lang)
+        inter_lbl = _t("age_intermediate", lang)
+        mat_lbl   = _t("age_mature", lang)
+        sql = f"""
+            SELECT
+                CAST("{sm.year}" AS INTEGER) AS year,
+                CASE
+                    WHEN CAST("{sm.age}" AS DOUBLE) < 5  THEN '{young_lbl}'
+                    WHEN CAST("{sm.age}" AS DOUBLE) < 15 THEN '{inter_lbl}'
+                    ELSE '{mat_lbl}'
+                END AS age_class,
+                ROUND(SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor}, 2) AS sv_area_km2
+            FROM read_parquet({paths})
+            WHERE "{sm.area}" IS NOT NULL
+              AND CAST("{sm.area}" AS DOUBLE) > 0
+              AND "{sm.age}" IS NOT NULL
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+            GROUP BY year, age_class
+            ORDER BY year, age_class
+        """
+    elif sm.cls and sm.year:
+        # Heuristic: parse numeric portion from classname (e.g., "sec_veg_3yr")
+        young_lbl = _t("age_young", lang)
+        inter_lbl = _t("age_intermediate", lang)
+        mat_lbl   = _t("age_mature", lang)
+        sql = f"""
+            SELECT
+                CAST("{sm.year}" AS INTEGER) AS year,
+                CASE
+                    WHEN TRY_CAST(REGEXP_EXTRACT("{sm.cls}", '\\d+') AS INTEGER) < 5  THEN '{young_lbl}'
+                    WHEN TRY_CAST(REGEXP_EXTRACT("{sm.cls}", '\\d+') AS INTEGER) < 15 THEN '{inter_lbl}'
+                    ELSE '{mat_lbl}'
+                END AS age_class,
+                ROUND(SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor}, 2) AS sv_area_km2
+            FROM read_parquet({paths})
+            WHERE "{sm.area}" IS NOT NULL
+              AND CAST("{sm.area}" AS DOUBLE) > 0
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+            GROUP BY year, age_class
+            ORDER BY year, age_class
+        """
+    else:
+        return []
+
+    return _run(sql, "P7 sv_age_class")
+
+
+# ── P8  SV Parameter B — Land-Use History Partition ────────────────────────
+
+def p8_sv_by_land_use(
+    files: list[Path], sm: SchemaMap
+) -> list[tuple]:
+    """
+    P8: VS_B(t, h) = Σ_{v: year=t, history=h} area_v
+
+    Uses classname or class field as land-use history proxy.
+    Returns rows of (year, land_use_class, sv_area_km2, pct_of_year).
+    """
+    if not sm.cls or not sm.year or not files:
+        return []
+    paths = _sql_paths(files)
+
+    sql = f"""
+        WITH by_class AS (
+            SELECT
+                CAST("{sm.year}" AS INTEGER) AS year,
+                COALESCE(CAST("{sm.cls}" AS VARCHAR), 'Unknown') AS land_use_class,
+                SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor} AS km2
+            FROM read_parquet({paths})
+            WHERE "{sm.area}" IS NOT NULL
+              AND CAST("{sm.area}" AS DOUBLE) > 0
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+            GROUP BY year, land_use_class
+        ),
+        totals AS (SELECT year, SUM(km2) AS yr_total FROM by_class GROUP BY year)
+        SELECT
+            bc.year,
+            bc.land_use_class,
+            ROUND(bc.km2, 2) AS sv_area_km2,
+            ROUND(bc.km2 / NULLIF(t.yr_total, 0) * 100, 2) AS pct_of_year
+        FROM by_class bc JOIN totals t USING (year)
+        ORDER BY bc.year, bc.km2 DESC
+    """
+    return _run(sql, "P8 sv_land_use")
+
+
+# ── P9  Municipality × State Cross-Tabulation ──────────────────────────────
+
+def p9_muni_state_matrix(
+    files: list[Path], sm: SchemaMap, param_label: str
+) -> list[tuple]:
+    """
+    P9: X_k(t, s, m) for parameter k
+
+    Computes all parameters at municipality–state granularity.
+    Returns rows of (year, state, municipality, suppression_km2,
+                     cumulative_km2, pct_state, pct_national).
+    """
+    if not sm.year or not sm.state or not sm.muni or not files:
+        return []
+    paths = _sql_paths(files)
+
+    sql = f"""
+        WITH base AS (
+            SELECT
+                CAST("{sm.year}" AS INTEGER) AS year,
+                "{sm.state}" AS state,
+                "{sm.muni}" AS municipality,
+                SUM(CAST("{sm.area}" AS DOUBLE)) * {sm.factor} AS km2
+            FROM read_parquet({paths})
+            WHERE "{sm.area}" IS NOT NULL
+              AND CAST("{sm.area}" AS DOUBLE) > 0
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND "{sm.state}" IS NOT NULL
+              AND "{sm.muni}" IS NOT NULL
+            GROUP BY year, state, municipality
+        ),
+        cumulative AS (
+            SELECT *,
+                SUM(km2) OVER (
+                    PARTITION BY state, municipality ORDER BY year
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cum_km2
+            FROM base
+        ),
+        state_totals AS (
+            SELECT year, state, SUM(km2) AS state_km2 FROM base GROUP BY year, state
+        ),
+        nat_totals AS (
+            SELECT year, SUM(km2) AS nat_km2 FROM base GROUP BY year
+        )
+        SELECT
+            c.year,
+            c.state,
+            c.municipality,
+            ROUND(c.km2, 2)     AS suppression_km2,
+            ROUND(c.cum_km2, 2) AS cumulative_km2,
+            ROUND(c.km2 / NULLIF(s.state_km2, 0) * 100, 2) AS pct_state,
+            ROUND(c.km2 / NULLIF(n.nat_km2,   0) * 100, 2) AS pct_national
+        FROM      cumulative c
+        JOIN state_totals s USING (year, state)
+        JOIN nat_totals   n USING (year)
+        ORDER BY c.year, c.state, c.km2 DESC
+    """
+    return _run(sql, f"P9 muni_state [{param_label}]")
+
+# ============================================================================
+# EXCEL SHEET BUILDERS
+# ============================================================================
+
+def _ws_p1(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_suppression", lang)[:31])
     ws.sheet_view.showGridLines = False
-    _freeze(ws, "B3")
+    ws.freeze_panes = "B3"
+    _title(ws, 1, _t("title_suppression", lang))
 
-    cols_pt = ["Ano", "Desmatamento (km²)", "Variação Anual (%)",
-               "% da Meta 2028", "Meta (km²)"]
-    cols_en = ["Year", "Deforestation (km²)", "Annual Change (%)",
-               "% of 2028 Target", "Target (km²)"]
-    cols = cols_pt if lang == "pt" else cols_en
+    ncols = len(rows[0]) if rows else 0
+    if ncols >= 4:
+        headers = [_t("col_year", lang), _t("col_state", lang),
+                   _t("col_muni", lang), _t("col_suppression", lang)]
+    elif ncols == 3:
+        headers = [_t("col_year", lang), _t("col_state", lang), _t("col_suppression", lang)]
+    else:
+        headers = [_t("col_year", lang), _t("col_suppression", lang)]
 
-    title = ("Desmatamento Anual na Amazônia Legal · INPE/PRODES"
-             if lang == "pt" else
-             "Annual Deforestation in Brazil's Legal Amazon · INPE/PRODES")
-    _write_section_title(ws, 1, title)
-    _write_header_row(ws, 2, cols)
-
-    target_2028 = 4_000
-    for i, (yr, km2) in enumerate(series, 3):
-        prev_km2 = series[i - 4][1] if i > 3 else None
-        yoy      = round((km2 - prev_km2) / prev_km2 * 100, 1) if prev_km2 else None
-        pct_tgt  = round(km2 / target_2028 * 100, 1)
-        tgt      = _POLICY_TARGETS.get(yr, "")
-        vals     = [yr, round(km2, 0), yoy, pct_tgt, tgt]
-        _write_data_row(ws, i, vals,
-                        highlight=_TXT_RED if km2 > target_2028 * 2 else None)
-
-    # Targets
-    for yr, km2 in _POLICY_TARGETS.items():
-        i = len(series) + 3
-        _write_data_row(ws, i, [yr, km2, "", 100.0, km2])
-        i += 1
-
-    row_src = len(series) + len(_POLICY_TARGETS) + 4
-    src = ("Fonte: INPE/PRODES. Calculado a partir dos dados GeoParquet."
-           if lang == "pt" else
-           "Source: INPE/PRODES. Calculated from GeoParquet data.")
-    _write_source(ws, row_src, src)
-
-    _set_col_widths(ws, {1: 8, 2: 22, 3: 20, 4: 18, 5: 16})
+    _hdr(ws, 2, headers)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_prodes", lang))
+    _widths(ws, {j + 1: 18 for j in range(len(headers))})
 
 
-def _sheet_biome_comparison(wb: Workbook, lang: str,
-                             biome_data: dict[str, tuple[float, int]]) -> None:
-    name = "Por Bioma" if lang == "pt" else "By Biome"
-    ws   = wb.create_sheet(name)
+def _ws_p2(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_cumulative", lang)[:31])
     ws.sheet_view.showGridLines = False
-    _freeze(ws, "B3")
+    ws.freeze_panes = "B3"
+    _title(ws, 1, _t("title_cumulative", lang))
 
-    cols_pt = ["Bioma", "Desmatamento (km²)", "Ano de Referência",
-               "% do Total Brasileiro"]
-    cols_en = ["Biome",  "Deforestation (km²)", "Reference Year",
-               "% of Brazilian Total"]
-    cols = cols_pt if lang == "pt" else cols_en
+    ncols = len(rows[0]) if rows else 0
+    if ncols >= 5:
+        headers = [_t("col_year", lang), _t("col_state", lang),
+                   _t("col_muni", lang), _t("col_suppression", lang), _t("col_cumulative", lang)]
+    elif ncols == 4:
+        headers = [_t("col_year", lang), _t("col_state", lang),
+                   _t("col_suppression", lang), _t("col_cumulative", lang)]
+    else:
+        headers = [_t("col_year", lang), _t("col_suppression", lang), _t("col_cumulative", lang)]
 
-    title = ("Desmatamento por Bioma Brasileiro · INPE/PRODES"
-             if lang == "pt" else
-             "Deforestation by Brazilian Biome · INPE/PRODES")
-    _write_section_title(ws, 1, title)
-    _write_header_row(ws, 2, cols, color=_H_MID)
-
-    total = sum(v for v, _ in biome_data.values()) or 1
-    biome_map = _BIOME_TO_LABEL_PT if lang == "pt" else _BIOME_TO_LABEL_EN
-    rows = sorted(biome_data.items(), key=lambda x: x[1][0], reverse=True)
-
-    for i, (biome_key, (km2, yr)) in enumerate(rows, 3):
-        label = biome_map.get(biome_key, biome_key)
-        pct   = round(km2 / total * 100, 1)
-        _write_data_row(ws, i, [label, round(km2, 0), yr, pct])
-
-    # Totals row
-    total_row = len(rows) + 3
-    cell = ws.cell(row=total_row, column=1, value="TOTAL" if lang == "en" else "TOTAL")
-    cell.font = _font(bold=True)
-    cell = ws.cell(row=total_row, column=2, value=round(total, 0))
-    cell.font = _font(bold=True)
-    ws.cell(row=total_row, column=4, value=100.0).font = _font(bold=True)
-
-    src = ("Fonte: INPE/PRODES. Calculado a partir dos dados GeoParquet."
-           if lang == "pt" else
-           "Source: INPE/PRODES. Calculated from GeoParquet data.")
-    _write_source(ws, total_row + 2, src)
-    _set_col_widths(ws, {1: 22, 2: 22, 3: 18, 4: 22})
+    _hdr(ws, 2, headers)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_prodes", lang))
+    _widths(ws, {j + 1: 18 for j in range(len(headers))})
 
 
-def _sheet_state_breakdown(wb: Workbook, lang: str,
-                            state_data: list[tuple[str, float]],
-                            year: int) -> None:
-    name = f"Por Estado ({year})" if lang == "pt" else f"By State ({year})"
-    ws   = wb.create_sheet(name)
+def _ws_p3(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_nv_a", lang)[:31])
     ws.sheet_view.showGridLines = False
+    _title(ws, 1, _t("title_nv_a", lang))
 
-    cols_pt = ["Estado", "Desmatamento (km²)", "% do Total Amazônia"]
-    cols_en = ["State",  "Deforestation (km²)", "% of Amazon Total"]
-    cols = cols_pt if lang == "pt" else cols_en
-
-    title = (f"Desmatamento na Amazônia Legal por Estado · {year} · INPE/PRODES"
-             if lang == "pt" else
-             f"Legal Amazon Deforestation by State · {year} · INPE/PRODES")
-    _write_section_title(ws, 1, title)
-    _write_header_row(ws, 2, cols, color=_H_MID)
-
-    total = sum(v for _, v in state_data) or 1
-    for i, (state, km2) in enumerate(state_data, 3):
-        pct = round(km2 / total * 100, 1)
-        _write_data_row(ws, i, [state, round(km2, 0), pct])
-
-    src = ("Fonte: INPE/PRODES. Calculado a partir dos dados GeoParquet."
-           if lang == "pt" else
-           "Source: INPE/PRODES. Calculated from GeoParquet data.")
-    _write_source(ws, len(state_data) + 4, src)
-    _set_col_widths(ws, {1: 28, 2: 22, 3: 22})
+    ncols = len(rows[0]) if rows else 2
+    base_h = [_t("col_year", lang), _t("col_state", lang), _t("col_muni", lang)][:ncols - 2]
+    headers = base_h + [_t("col_nv_remaining", lang), _t("col_nv_pct", lang)]
+    _hdr(ws, 2, headers)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+        pct = r[-1]
+        color = _C_RED if isinstance(pct, float) and pct < 50 else _C_GRN
+        ws.cell(row=i, column=len(headers)).font = _font(bold=True, color=color)
+    _src(ws, len(rows) + 4, _t("src_prodes", lang))
+    _widths(ws, {j + 1: 18 for j in range(len(headers))})
 
 
-def _sheet_forest_cover(wb: Workbook, lang: str) -> None:
-    name = "Cobertura Florestal" if lang == "pt" else "Forest Cover"
-    ws   = wb.create_sheet(name)
+def _ws_p4(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_nv_b", lang)[:31])
     ws.sheet_view.showGridLines = False
-
-    cols_pt = ["Bioma", "Cobertura Remanescente (%)", "Avaliação"]
-    cols_en = ["Biome",  "Remaining Cover (%)",        "Status"]
-    cols = cols_pt if lang == "pt" else cols_en
-
-    title = ("Cobertura de Vegetação Nativa Remanescente · MapBiomas 2023"
-             if lang == "pt" else
-             "Remaining Native Vegetation Cover · MapBiomas 2023")
-    _write_section_title(ws, 1, title)
-    _write_header_row(ws, 2, cols, color=_H_MID)
-
-    ratings_pt = {(0, 30): "Crítico", (30, 60): "Preocupante",
-                  (60, 80): "Moderado", (80, 100): "Preservado"}
-    ratings_en = {(0, 30): "Critical", (30, 60): "Concerning",
-                  (60, 80): "Moderate", (80, 100): "Preserved"}
-    ratings = ratings_pt if lang == "pt" else ratings_en
-
-    data = _COVER_PCT[lang]
-    for i, (biome, pct) in enumerate(sorted(data, key=lambda x: x[1]), 3):
-        rating = next(v for (lo, hi), v in ratings.items() if lo <= pct < hi)
-        row_vals = [biome, pct, rating]
-        _write_data_row(ws, i, row_vals)
-        color = _TXT_RED if pct < 40 else (_TXT_MED if pct < 65 else _TXT_GRN)
-        ws.cell(row=i, column=2).font = _font(bold=True, color=color)
-
-    src = ("Fonte: MapBiomas 2023. Mapeamento Anual da Cobertura e Uso da Terra no Brasil."
-           if lang == "pt" else
-           "Source: MapBiomas 2023. Annual Land Cover and Use Mapping Project.")
-    _write_source(ws, len(data) + 4, src)
-    _set_col_widths(ws, {1: 22, 2: 26, 3: 18})
+    _title(ws, 1, _t("title_nv_b", lang))
+    headers = [_t("col_year", lang), _t("col_class", lang),
+               _t("col_suppression", lang), _t("col_pct_total", lang)]
+    _hdr(ws, 2, headers, color=_C_FOREST)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_prodes", lang))
+    _widths(ws, {1: 8, 2: 35, 3: 20, 4: 16})
 
 
-def _sheet_international(wb: Workbook, lang: str) -> None:
-    name = "Comparativo Global" if lang == "pt" else "International"
-    ws   = wb.create_sheet(name)
+def _ws_p5(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_sv_extent", lang)[:31])
     ws.sheet_view.showGridLines = False
-
-    cols_pt = ["País", "Perda Floresta Tropical (km²)", "Fonte / Metodologia"]
-    cols_en = ["Country", "Tropical Forest Loss (km²)", "Source / Methodology"]
-    cols = cols_pt if lang == "pt" else cols_en
-
-    title = ("Perda de Floresta Tropical por País · 2023 · GFW / FAO"
-             if lang == "pt" else
-             "Tropical Forest Loss by Country · 2023 · GFW / FAO")
-    _write_section_title(ws, 1, title)
-    _write_header_row(ws, 2, cols)
-
-    for i, (country, km2, source) in enumerate(
-            sorted(_INTL, key=lambda x: x[1], reverse=True), 3):
-        _write_data_row(ws, i, [country, km2, source])
-        if country == "Brazil":
-            for j in range(1, 4):
-                ws.cell(row=i, column=j).font = _font(bold=True, color=_H_MID)
-
-    src = ("* Metodologias distintas: GFW mede perda de cobertura arbórea; "
-           "PRODES mede desmatamento.\n  Comparação indicativa, não direta."
-           if lang == "pt" else
-           "* Different methodologies: GFW measures tree-cover loss; "
-           "PRODES measures deforestation.\n  Indicative comparison only.")
-    _write_source(ws, len(_INTL) + 4, src)
-    _set_col_widths(ws, {1: 18, 2: 28, 3: 38})
+    _title(ws, 1, _t("title_sv_extent", lang))
+    ncols = len(rows[0]) if rows else 2
+    base_h = ([_t("col_year", lang), _t("col_state", lang)] if ncols > 2
+              else [_t("col_year", lang)])
+    headers = base_h + [_t("col_sv_extent", lang)]
+    _hdr(ws, 2, headers, color=_C_FOREST)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_vs", lang))
+    _widths(ws, {j + 1: 18 for j in range(len(headers))})
 
 
-def _sheet_methodology(wb: Workbook, lang: str) -> None:
-    name = "Metodologia" if lang == "pt" else "Methodology"
-    ws   = wb.create_sheet(name)
+def _ws_p6(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_sv_increment", lang)[:31])
     ws.sheet_view.showGridLines = False
+    _title(ws, 1, _t("title_sv_increment", lang))
+    ncols = len(rows[0]) if rows else 3
+    base_h = ([_t("col_year", lang), _t("col_state", lang)] if ncols > 3
+              else [_t("col_year", lang)])
+    headers = base_h + [_t("col_sv_extent", lang), _t("col_sv_increment", lang)]
+    _hdr(ws, 2, headers, color=_C_FOREST)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+        inc = r[-1]
+        if isinstance(inc, (int, float)):
+            color = _C_GRN if inc >= 0 else _C_RED
+            ws.cell(row=i, column=len(headers)).font = _font(bold=True, color=color)
+    _src(ws, len(rows) + 4, _t("src_vs", lang))
+    _widths(ws, {j + 1: 18 for j in range(len(headers))})
+
+
+def _ws_p7(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_sv_a", lang)[:31])
+    ws.sheet_view.showGridLines = False
+    _title(ws, 1, _t("title_sv_a", lang))
+    headers = [_t("col_year", lang), _t("col_age_class", lang), _t("col_sv_area", lang)]
+    _hdr(ws, 2, headers, color=_C_FOREST)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_vs", lang))
+    _widths(ws, {1: 8, 2: 30, 3: 20})
+
+
+def _ws_p8(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_sv_b", lang)[:31])
+    ws.sheet_view.showGridLines = False
+    _title(ws, 1, _t("title_sv_b", lang))
+    headers = [_t("col_year", lang), "Land-Use Class / Classe de Uso",
+               _t("col_sv_area", lang), _t("col_pct_total", lang)]
+    _hdr(ws, 2, headers, color=_C_FOREST)
+    for i, r in enumerate(rows, 3):
+        _row(ws, i, list(r))
+    _src(ws, len(rows) + 4, _t("src_vs", lang))
+    _widths(ws, {1: 8, 2: 40, 3: 20, 4: 16})
+
+
+def _ws_p9(wb: Workbook, lang: str, rows: list[tuple]) -> None:
+    ws = wb.create_sheet(_t("title_muni", lang)[:31])
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "D3"
+    _title(ws, 1, _t("title_muni", lang))
+    headers = [_t("col_year", lang), _t("col_state", lang), _t("col_muni", lang),
+               _t("col_suppression", lang), _t("col_cumulative", lang),
+               "% Estado / State", "% Nacional / National"]
+    _hdr(ws, 2, headers)
+    for i, r in enumerate(rows[:5000], 3):   # cap at 5000 rows for xlsx perf
+        _row(ws, i, list(r))
+    if len(rows) > 5000:
+        ws.cell(row=5004, column=1,
+                value=f"[Truncado para 5.000 linhas de {len(rows)} / "
+                      f"Truncated to 5,000 of {len(rows)} rows]").font = _font(italic=True)
+    _src(ws, min(len(rows), 5000) + 4, _t("src_prodes", lang))
+    _widths(ws, {1: 8, 2: 14, 3: 30, 4: 20, 5: 20, 6: 14, 7: 16})
+
+
+def _ws_methodology(wb: Workbook, lang: str) -> None:
+    ws = wb.create_sheet(_t("title_methodology", lang)[:31])
+    ws.sheet_view.showGridLines = False
+    _title(ws, 1, _t("title_methodology", lang))
 
     notes = {
         "pt": [
-            ("INPE/PRODES",
-             "Sistema de Monitoramento do Desmatamento na Amazônia Brasileira por Satélite. "
-             "Detecta desmatamento por corte raso em imagem óptica. "
-             "Referência: https://terrabrasilis.dpi.inpe.br"),
-            ("MapBiomas 2023",
-             "Projeto de mapeamento anual da cobertura e uso da terra no Brasil. "
-             "Dados de cobertura florestal remanescente. "
-             "Referência: https://mapbiomas.org"),
-            ("Global Forest Watch / FAO",
-             "Plataforma global de monitoramento florestal. "
-             "Dados de perda de cobertura arbórea (Hansen et al.). "
-             "Metodologia diferente do PRODES — não diretamente comparável. "
-             "Referência: https://globalforestwatch.org"),
-            ("Metas de Desmatamento",
-             "Meta de 4.000 km² para 2028 baseada em compromissos do governo brasileiro "
-             "e financiamento NORAD/Fundo Amazônia. "
-             "Meta intermediária de 4.866 km² para 2026."),
-            ("Cálculos",
-             "Todos os dados PRODES calculados on-the-fly a partir dos arquivos "
-             "GeoParquet gerados pelo pipeline de conversão (script 02). "
-             "Gerado em: " + datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("P1 — Série de Supressão Anual",
+             "S(t,s,m) = Σ area dos polígonos de supressão para o ano t, "
+             "estado s e município m. Unidade: km². Fonte: INPE/PRODES."),
+            ("P2 — Supressão Acumulada",
+             "C(t,s,m) = Σ_{τ≤t} S(τ,s,m). Calculada via função de janela SQL "
+             "(SUM OVER PARTITION BY estado, município ORDER BY ano)."),
+            ("P3 — Vegetação Nativa Remanescente (A)",
+             "NV_A(t) = Â₀ − C(t), onde Â₀ = C(t_max)×1,10 é o estimador "
+             "do estoque florestal no início do período monitorado."),
+            ("P4 — Vegetação Nativa por Classe (B)",
+             "Partição de S(t) pela classe de uso/cobertura detectada."),
+            ("P5 — Extensão Anual de Vegetação Secundária",
+             "VS(t,s) = Σ área dos polígonos de VS para o ano t e estado s."),
+            ("P6 — Incremento Líquido Anual de VS",
+             "ΔVS(t,s) = VS(t,s) − VS(t−1,s). Positivo = recuperação líquida."),
+            ("P7 — VS por Classe de Idade (A)",
+             "Partição por idade: Jovem (<5yr), Intermediária (5–15yr), Madura (≥15yr)."),
+            ("P8 — VS por Histórico de Uso (B)",
+             "Partição por classe/histórico de uso disponível no atributo 'classname'."),
+            ("P9 — Matriz Município × Estado",
+             "Todos os parâmetros calculados na escala municipal e "
+             "agregados ao nível estadual. Inclui % do total estadual e nacional."),
+            ("Dados",
+             f"Computado on-the-fly a partir dos GeoParquets primários. "
+             f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
         ],
         "en": [
-            ("INPE/PRODES",
-             "Brazil's Amazon Deforestation Monitoring System by Satellite. "
-             "Detects clear-cut deforestation via optical imagery. "
-             "Reference: https://terrabrasilis.dpi.inpe.br"),
-            ("MapBiomas 2023",
-             "Annual land cover and use mapping project for Brazil. "
-             "Remaining forest cover data. "
-             "Reference: https://mapbiomas.org"),
-            ("Global Forest Watch / FAO",
-             "Global forest monitoring platform. "
-             "Tree-cover loss data (Hansen et al.). "
-             "Different methodology from PRODES — not directly comparable. "
-             "Reference: https://globalforestwatch.org"),
-            ("Deforestation Targets",
-             "4,000 km² target for 2028 based on Brazilian government commitments "
-             "and NORAD/Amazon Fund financing. "
-             "Intermediate target of 4,866 km² for 2026."),
-            ("Calculations",
-             "All PRODES data computed on-the-fly from GeoParquet files "
-             "generated by the conversion pipeline (script 02). "
-             "Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("P1 — Annual Suppression Series",
+             "S(t,s,m) = Σ area of suppression polygons for year t, state s, "
+             "municipality m. Unit: km². Source: INPE/PRODES."),
+            ("P2 — Cumulative Suppression",
+             "C(t,s,m) = Σ_{τ≤t} S(τ,s,m). Computed via SQL window function "
+             "(SUM OVER PARTITION BY state, municipality ORDER BY year)."),
+            ("P3 — Remaining Natural Vegetation (A)",
+             "NV_A(t) = Â₀ − C(t), where Â₀ = C(t_max)×1.10 is the "
+             "estimated forest stock at the start of the monitored period."),
+            ("P4 — Natural Vegetation by Class (B)",
+             "Partition of S(t) by detected land-cover/use class."),
+            ("P5 — Annual Secondary Vegetation Extent",
+             "VS(t,s) = Σ area of SV polygons for year t and state s."),
+            ("P6 — Annual Net Increment of SV",
+             "ΔVS(t,s) = VS(t,s) − VS(t−1,s). Positive = net recovery."),
+            ("P7 — SV by Age Class (A)",
+             "Partition by age: Young (<5yr), Intermediate (5–15yr), Mature (≥15yr)."),
+            ("P8 — SV by Land-Use History (B)",
+             "Partition by class/land-use history from the 'classname' attribute."),
+            ("P9 — Municipality × State Matrix",
+             "All parameters at municipal scale, aggregated to state level. "
+             "Includes % of state total and % of national total."),
+            ("Data",
+             f"Computed on-the-fly from primary GeoParquet files. "
+             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
         ],
     }[lang]
 
-    _write_section_title(ws, 1, "Notas Metodológicas" if lang == "pt" else "Methodological Notes")
     row = 3
-    for source, note in notes:
-        ws.cell(row=row,   column=1, value=source).font = _font(bold=True, color=_H_DARK, size=11)
-        ws.cell(row=row+1, column=1, value=note).font   = _font(color=_TXT_DARK, size=10)
-        ws.cell(row=row+1, column=1).alignment = _align(wrap=True)
-        ws.row_dimensions[row+1].height = 45
+    for title, body in notes:
+        ws.cell(row=row, column=1, value=title).font = _font(bold=True, color=_C_NAVY, size=11)
+        ws.cell(row=row + 1, column=1, value=body).font = _font(color=_C_DARK, size=10)
+        ws.cell(row=row + 1, column=1).alignment = _align(wrap=True)
+        ws.row_dimensions[row + 1].height = 40
         row += 3
+    ws.column_dimensions["A"].width = 95
 
-    ws.column_dimensions["A"].width = 90
+# ============================================================================
+# MATPLOTLIB CHART FUNCTIONS  (publication quality, journal ready)
+# ============================================================================
+
+def chart_suppression_trend(p1_national: list[tuple], lang: str) -> Path:
+    """Bar chart of annual national suppression with viridis color scale."""
+    _pub_style()
+    years = [int(r[0]) for r in p1_national if len(r) == 2]
+    km2   = [float(r[1]) for r in p1_national if len(r) == 2]
+    if not years:
+        return None
+
+    cmap   = plt.get_cmap(_CMAP_UNI, len(years))
+    colors = [cmap(i / max(len(years) - 1, 1)) for i in range(len(years))]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(years, km2, color=colors, width=0.75, zorder=3, linewidth=0)
+    _clean_ax(ax)
+
+    ax.set_xlabel(_t("ax_year", lang), labelpad=8)
+    ax.set_ylabel(_t("ax_km2", lang), labelpad=8)
+    ax.set_title(_t("title_suppression", lang), fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+
+    # Annotate peak and most recent
+    if km2:
+        peak_i = km2.index(max(km2))
+        ax.annotate(f"{km2[peak_i]:,.0f}",
+                    xy=(years[peak_i], km2[peak_i]),
+                    xytext=(0, 6), textcoords="offset points",
+                    ha="center", fontsize=8, color="#C0392B", fontweight="bold")
+
+    ax.text(0.01, -0.12, _t("src_prodes", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+
+    plt.tight_layout()
+    return _save_chart(fig, f"suppression_trend_{lang}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def chart_cumulative_suppression(p2_national: list[tuple], lang: str) -> Path:
+    """Cumulative suppression line chart with shaded area."""
+    _pub_style()
+    # Expect rows: (year, suppression, cumulative)  OR  (year, cumulative)
+    rows_2col = [r for r in p2_national if len(r) == 2]
+    rows_3col = [r for r in p2_national if len(r) == 3]
+    if rows_3col:
+        years = [int(r[0]) for r in rows_3col]
+        cum   = [float(r[2]) for r in rows_3col]
+    elif rows_2col:
+        years = [int(r[0]) for r in rows_2col]
+        cum   = list(np.cumsum([float(r[1]) for r in rows_2col]))
+    else:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.fill_between(years, cum, alpha=0.15, color="#C0392B")
+    ax.plot(years, cum, color="#C0392B", lw=2.5, zorder=4)
+    ax.scatter(years, cum, color="#C0392B", s=30, zorder=5)
+    _clean_ax(ax)
+
+    ax.set_xlabel(_t("ax_year", lang), labelpad=8)
+    ax.set_ylabel(_t("ax_cum_km2", lang), labelpad=8)
+    ax.set_title(_t("title_cumulative", lang), fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+    ax.text(0.01, -0.12, _t("src_prodes", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+
+    plt.tight_layout()
+    return _save_chart(fig, f"cumulative_suppression_{lang}")
+
+
+def chart_sv_dynamics(p5_national: list[tuple], lang: str) -> Path:
+    """Secondary vegetation extent — bar chart with cividis color scale."""
+    _pub_style()
+    years = [int(r[0]) for r in p5_national if len(r) == 2]
+    km2   = [float(r[1]) for r in p5_national if len(r) == 2]
+    if not years:
+        return None
+
+    cmap   = plt.get_cmap(_CMAP_DIV, len(years))
+    colors = [cmap(i / max(len(years) - 1, 1)) for i in range(len(years))]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(years, km2, color=colors, width=0.75, zorder=3, linewidth=0)
+    _clean_ax(ax)
+
+    ax.set_xlabel(_t("ax_year", lang), labelpad=8)
+    ax.set_ylabel(_t("ax_km2", lang), labelpad=8)
+    ax.set_title(_t("title_sv_extent", lang), fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+    ax.text(0.01, -0.12, _t("src_vs", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+
+    plt.tight_layout()
+    return _save_chart(fig, f"sv_dynamics_{lang}")
+
+
+def chart_sv_increment(p6_national: list[tuple], lang: str) -> Path:
+    """Net SV increment — diverging bar chart (green=positive, red=negative)."""
+    _pub_style()
+    years = [int(r[0]) for r in p6_national if len(r) >= 3]
+    inc   = [float(r[-1]) for r in p6_national if len(r) >= 3]
+    if not years:
+        return None
+
+    colors = [_C_GRN if v >= 0 else _C_RED for v in inc]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(years, inc, color=colors, width=0.75, zorder=3, linewidth=0)
+    ax.axhline(0, color="#888888", lw=0.8, zorder=2)
+    _clean_ax(ax)
+
+    ax.set_xlabel(_t("ax_year", lang), labelpad=8)
+    ax.set_ylabel(_t("ax_delta_km2", lang), labelpad=8)
+    ax.set_title(_t("title_sv_increment", lang), fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:+,.0f}"))
+    ax.text(0.01, -0.12, _t("src_vs", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+
+    plt.tight_layout()
+    return _save_chart(fig, f"sv_increment_{lang}")
+
+
+def chart_state_ranking(p1_rows: list[tuple], lang: str, top_n: int = 15) -> Path:
+    """Horizontal bar — top states by cumulative suppression (most recent year)."""
+    _pub_style()
+    # Filter for rows with state column (ncols==3: year, state, km2)
+    state_rows = [r for r in p1_rows if len(r) == 3]
+    if not state_rows:
+        return None
+
+    max_year = max(int(r[0]) for r in state_rows)
+    year_rows = [(str(r[1]), float(r[2])) for r in state_rows if int(r[0]) == max_year]
+    year_rows.sort(key=lambda x: x[1], reverse=True)
+    year_rows = year_rows[:top_n]
+    states, km2 = zip(*year_rows) if year_rows else ([], [])
+
+    cmap   = plt.get_cmap(_CMAP_UNI, len(states))
+    colors = [cmap(i / max(len(states) - 1, 1)) for i in range(len(states))]
+
+    fig, ax = plt.subplots(figsize=(9, max(4, len(states) * 0.45)))
+    bars = ax.barh(range(len(states)), km2, color=colors, height=0.7, zorder=3)
+    ax.set_yticks(range(len(states)))
+    ax.set_yticklabels(states, fontsize=9)
+    ax.invert_yaxis()
+    _clean_ax(ax)
+    ax.spines["left"].set_visible(False)
+    ax.set_xlabel(_t("ax_km2", lang), labelpad=8)
+    ax.set_title(f"{_t('title_suppression', lang)} — {max_year}",
+                 fontsize=11, fontweight="bold", loc="left", pad=10)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+
+    for i, v in enumerate(km2):
+        ax.text(v + max(km2) * 0.01, i, f"{v:,.0f}",
+                va="center", fontsize=8, color=_C_MED)
+
+    ax.text(0.01, -0.08, _t("src_prodes", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+    plt.tight_layout()
+    return _save_chart(fig, f"state_ranking_{lang}")
+
+
+def chart_sv_subclass(p7_rows: list[tuple], lang: str) -> Path:
+    """Stacked bar — SV by age class over time (viridis)."""
+    _pub_style()
+    if not p7_rows:
+        return None
+
+    from collections import defaultdict
+    by_year_class: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    all_classes: set[str] = set()
+    for r in p7_rows:
+        if len(r) < 3:
+            continue
+        yr, cls, km2 = int(r[0]), str(r[1]), float(r[2])
+        by_year_class[yr][cls] += km2
+        all_classes.add(cls)
+
+    years   = sorted(by_year_class)
+    classes = sorted(all_classes)
+    cmap    = plt.get_cmap(_CMAP_UNI, max(len(classes), 3))
+    colors  = [cmap(i / max(len(classes) - 1, 1)) for i in range(len(classes))]
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    bottom  = np.zeros(len(years))
+    for ci, cls in enumerate(classes):
+        vals = np.array([by_year_class[y].get(cls, 0.0) for y in years])
+        ax.bar(years, vals, bottom=bottom, color=colors[ci],
+               label=cls, width=0.75, zorder=3, linewidth=0)
+        bottom += vals
+
+    _clean_ax(ax)
+    ax.set_xlabel(_t("ax_year", lang), labelpad=8)
+    ax.set_ylabel(_t("ax_km2", lang), labelpad=8)
+    ax.set_title(_t("title_sv_a", lang), fontsize=12, fontweight="bold",
+                 loc="left", pad=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+    ax.legend(fontsize=8, loc="upper left", frameon=False)
+    ax.text(0.01, -0.12, _t("src_vs", lang),
+            transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
+
+    plt.tight_layout()
+    return _save_chart(fig, f"sv_subclass_{lang}")
+
+# ============================================================================
+# POWERPOINT SLIDE BUILDERS  (bilingual, academic layout)
+# ============================================================================
+
+_PPT_W = 10.0   # inches
+_PPT_H = 5.625  # 16:9
+
+
+def _in(x: float) -> int:
+    return int(x * 914_400)
+
+
+def _rgb(h: str) -> RGBColor:
+    h = h.lstrip("#")
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _pptx_tb(slide, text, l, t, w, h, *, size=11, bold=False,
+             color=_C_DARK, italic=False, align=1, wrap=True):
+    from pptx.util import Pt
+    box = slide.shapes.add_textbox(_in(l), _in(t), _in(w), _in(h))
+    tf  = box.text_frame
+    tf.word_wrap = wrap
+    for i, line in enumerate(str(text).split("\n")):
+        p   = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = align
+        run = p.add_run()
+        run.text          = line
+        run.font.size     = Pt(size)
+        run.font.bold     = bold
+        run.font.italic   = italic
+        run.font.color.rgb = _rgb(color)
+    return box
+
+
+def _pptx_rect(slide, l, t, w, h, fill_hex):
+    sh = slide.shapes.add_shape(1, _in(l), _in(t), _in(w), _in(h))
+    sh.fill.solid()
+    sh.fill.fore_color.rgb = _rgb(fill_hex)
+    sh.line.fill.background()
+    return sh
+
+
+def _blank_slide(prs: Presentation):
+    return prs.slides.add_slide(prs.slide_layouts[6])
+
+
+def _lang_colors(lang: str) -> tuple[str, str]:
+    """Return (primary, accent) hex colors for the language block."""
+    return ("1B5E20", "E8F5E9") if lang == "pt" else ("0D47A1", "E3F2FD")
+
+
+def _slide_cover(prs: Presentation, lang: str) -> None:
+    sl     = _blank_slide(prs)
+    pri, _ = _lang_colors(lang)
+    _pptx_rect(sl, 0, 0, _PPT_W, 0.07, pri)
+    _pptx_rect(sl, 0, _PPT_H - 0.07, _PPT_W, 0.07, pri)
+    _pptx_tb(sl, _t("pptx_lang_label", lang), 0.35, 0.12, 2, 0.28,
+             size=7, bold=True, color=pri)
+    _pptx_tb(sl, "PRODES · Imazon", 0.35, 0.45, 8.5, 0.5,
+             size=22, bold=True, color=_C_NAVY)
+    _pptx_tb(sl, _t("pptx_subtitle", lang), 0.35, 1.05, 7.8, 1.4,
+             size=13, color=_C_MED)
+    _pptx_rect(sl, 0.35, 2.6, 2.5, 0.05, pri)
+    _pptx_tb(sl, _t("pptx_credit", lang), 0.35, 2.75, 8.5, 0.4,
+             size=9, italic=True, color=_C_MED)
+    year = datetime.now().year
+    _pptx_tb(sl, str(year), 0.35, 3.15, 8.5, 0.35, size=9, color="#AAAAAA")
+
+
+def _slide_chart(prs: Presentation, lang: str,
+                 chart_path: Path | None, title: str,
+                 subtitle: str, source: str) -> None:
+    """Chart slide with academic sidebar for methodology notes."""
+    sl     = _blank_slide(prs)
+    pri, acc = _lang_colors(lang)
+    _pptx_rect(sl, 0, 0, _PPT_W, 0.06, pri)
+    _pptx_rect(sl, 0, _PPT_H - 0.06, _PPT_W, 0.06, pri)
+
+    # Sidebar
+    _pptx_rect(sl, 7.6, 0.06, 2.4, _PPT_H - 0.12, acc)
+    _pptx_tb(sl, _t("pptx_method_title", lang), 7.7, 0.2, 2.2, 0.35,
+             size=8, bold=True, color=pri)
+    _pptx_tb(sl, _t("pptx_method_body", lang), 7.7, 0.55, 2.2, 3.5,
+             size=7, color=_C_MED, wrap=True)
+
+    # Main area
+    _pptx_tb(sl, title, 0.25, 0.1, 7.2, 0.4, size=12, bold=True, color=_C_DARK)
+    _pptx_tb(sl, subtitle, 0.25, 0.5, 7.2, 0.28, size=8, color=_C_MED)
+
+    if chart_path and chart_path.exists():
+        try:
+            sl.shapes.add_picture(str(chart_path), _in(0.2), _in(0.82),
+                                  width=_in(7.2))
+        except Exception:
+            _pptx_tb(sl, "[Chart unavailable]", 0.2, 0.82, 7.2, 3.5,
+                     size=9, color="#AAAAAA", italic=True)
+    else:
+        _pptx_tb(sl, "[No data available for this parameter]", 0.2, 2.5, 7.2, 0.5,
+                 size=9, color="#AAAAAA", italic=True)
+
+    _pptx_tb(sl, source, 0.25, 5.3, 7.2, 0.25, size=6.5, italic=True, color="#AAAAAA")
+
+
+def _slide_table_summary(prs: Presentation, lang: str,
+                         rows: list[tuple], title: str,
+                         headers: list[str], source: str) -> None:
+    """Text-table summary slide (top 8 rows for readability)."""
+    sl     = _blank_slide(prs)
+    pri, acc = _lang_colors(lang)
+    _pptx_rect(sl, 0, 0, _PPT_W, 0.06, pri)
+    _pptx_rect(sl, 0, _PPT_H - 0.06, _PPT_W, 0.06, pri)
+    _pptx_tb(sl, title, 0.25, 0.1, 9.5, 0.4, size=12, bold=True, color=_C_DARK)
+    _pptx_tb(sl, source, 0.25, 5.3, 9.5, 0.25, size=6.5, italic=True, color="#AAAAAA")
+
+    display_rows = rows[:8]
+    if not display_rows:
+        _pptx_tb(sl, "[No data]", 0.25, 1.0, 9.5, 0.4, size=10, color="#AAAAAA")
+        return
+
+    col_w = 9.5 / max(len(headers), 1)
+    _pptx_rect(sl, 0.25, 0.58, 9.5, 0.38, pri)
+    for j, h in enumerate(headers):
+        _pptx_tb(sl, h, 0.25 + j * col_w, 0.6, col_w, 0.34,
+                 size=8.5, bold=True, color=_C_WHITE, align=2)
+
+    for i, row in enumerate(display_rows):
+        y = 0.96 + i * 0.44
+        bg = "F4F6F8" if i % 2 == 0 else _C_WHITE
+        _pptx_rect(sl, 0.25, y, 9.5, 0.42, bg)
+        for j, val in enumerate(row[:len(headers)]):
+            _pptx_tb(sl, str(round(val, 2) if isinstance(val, float) else val),
+                     0.25 + j * col_w, y + 0.04, col_w, 0.36,
+                     size=8, color=_C_DARK,
+                     align=3 if isinstance(val, (int, float)) else 1)
+
+
+def build_pptx(lang: str, chart_paths: dict[str, Path | None],
+               data: dict) -> Presentation:
+    """Construct the full bilingual PPTX for one language block."""
+    prs = Presentation()
+    prs.slide_width  = _in(_PPT_W)
+    prs.slide_height = _in(_PPT_H)
+
+    _slide_cover(prs, lang)
+
+    specs = [
+        ("suppression_trend",     "title_suppression",   "src_prodes"),
+        ("cumulative_suppression", "title_cumulative",    "src_prodes"),
+        ("sv_dynamics",            "title_sv_extent",     "src_vs"),
+        ("sv_increment",           "title_sv_increment",  "src_vs"),
+        ("state_ranking",          "title_suppression",   "src_prodes"),
+        ("sv_subclass",            "title_sv_a",          "src_vs"),
+    ]
+    for key, title_key, src_key in specs:
+        _slide_chart(
+            prs, lang,
+            chart_paths.get(f"{key}_{lang}"),
+            _t(title_key, lang),
+            f"INPE/PRODES · Imazon  ·  {datetime.now().year}",
+            _t(src_key, lang),
+        )
+
+    # P9 summary table slide
+    p9 = data.get("p9", [])[:8]
+    if p9:
+        headers = [_t("col_year", lang), _t("col_state", lang), _t("col_muni", lang),
+                   _t("col_suppression", lang), _t("col_cumulative", lang)]
+        _slide_table_summary(prs, lang, p9, _t("title_muni", lang),
+                             headers, _t("src_prodes", lang))
+
+    return prs
+
+# ============================================================================
+# MAIN ORCHESTRATOR
+# ============================================================================
 
 def main() -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
-    print(f"  PRODES Table Exporter  v{__version__}  |  {now}")
+    print(f"  PRODES Analytics Pipeline  v{__version__}  |  {now}")
     print(f"{SEP}\n")
 
-    if not GPQ_DIR.exists():
-        sys.exit(f"[FATAL] GeoParquet directory not found: {GPQ_DIR}\n"
-                 "        Run  python 02_convert_to_geoparquet.py  first.")
+    gpq_dir = Path(str(CONFIG["geoparquet_dir"]))
+    if not gpq_dir.exists():
+        sys.exit(f"[FATAL] GeoParquet directory not found: {gpq_dir}")
 
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    CHART_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Load data ────────────────────────────────────────────────────────
-    print("  Loading data from GeoParquet files...")
-    biome_files = _discover_defor_files(GPQ_DIR)
+    # ── 1. Discover files ─────────────────────────────────────────────────
+    print("  [1/5] Discovering data files...")
+    supp_by_biome = _discover_suppression(gpq_dir)
+    vs_files      = _discover_vs(gpq_dir)
 
-    if not biome_files:
-        sys.exit("[FATAL] No deforestation parquet files found.\n"
-                 "        Run  python 02_convert_to_geoparquet.py  first.")
+    all_supp = [f for fs in supp_by_biome.values() for f in fs]
+    amazon_files = [f for bd, fs in supp_by_biome.items()
+                    if bd in {"Amazon Biome", "Legal Amazon"} for f in fs]
 
-    # Amazon series
-    amazon_files = [f for bd, fs in biome_files.items()
-                    if bd in _AMAZON_DIRS for f in fs]
-    ac, yc = _detect_cols(amazon_files)
-    factor = _infer_factor(amazon_files, ac) if ac else 1.0
-    amazon_series: list[tuple[int, float]] = []
-    if ac and yc:
-        amazon_series = _series_by_year(amazon_files, ac, yc, factor)
-        print(f"  Amazon series: {len(amazon_series)} year(s) loaded")
+    print(f"     Suppression files  : {len(all_supp)} ({len(supp_by_biome)} biomes)")
+    print(f"     Secondary veg files: {len(vs_files)}")
 
-    # Biome totals (most recent year per biome)
-    ref_year = max(y for y, _ in amazon_series) if amazon_series else None
-    biome_data: dict[str, tuple[float, int]] = {}   # biome → (km², year)
-    for biome_dir, files in biome_files.items():
-        ac2, yc2 = _detect_cols(files)
-        if not ac2:
-            continue
-        fac2 = _infer_factor(files, ac2)
-        yr_to_use = ref_year
-        if yc2 and ref_year:
-            try:
-                paths = [str(f).replace("\\", "/") for f in files]
-                row = duckdb.connect().execute(
-                    f'SELECT MAX(CAST("{yc2}" AS INTEGER)) FROM read_parquet({paths!r})'
-                ).fetchone()
-                if row and row[0]:
-                    yr_to_use = int(row[0])
-            except Exception:
-                pass
-        if yc2 and yr_to_use:
-            paths = [str(f).replace("\\", "/") for f in files]
-            try:
-                row = duckdb.connect().execute(f"""
-                    SELECT SUM(CAST("{ac2}" AS DOUBLE)) * {fac2}
-                    FROM read_parquet({paths!r})
-                    WHERE CAST("{yc2}" AS INTEGER) = {yr_to_use}
-                    AND "{ac2}" IS NOT NULL
-                """).fetchone()
-                if row and row[0] and float(row[0]) > 0:
-                    biome_data[biome_dir] = (round(float(row[0]), 1), yr_to_use)
-            except Exception:
-                pass
+    if not all_supp:
+        sys.exit("[FATAL] No suppression parquet files found. Run scripts 02 and 05 first.")
 
-    print(f"  Biome data: {list(biome_data)}")
+    # ── 2. Schema probing ─────────────────────────────────────────────────
+    print("\n  [2/5] Probing schemas...")
+    sm_supp = _schema(all_supp or amazon_files)
+    sm_vs   = _schema(vs_files) if vs_files else None
 
-    # State breakdown (Amazon, most recent year)
-    state_data: list[tuple[str, float]] = []
-    if amazon_files and ac and yc and ref_year:
-        state_data = _series_by_state(amazon_files, ac, yc, factor, ref_year)
-        print(f"  State breakdown: {len(state_data)} state(s) for {ref_year}")
+    if not sm_supp:
+        sys.exit("[FATAL] Could not detect area column in suppression parquets.")
 
-    # ── Build workbooks ─────────────────────────────────────────────────
+    print(f"     Suppression — area: {sm_supp.area}  year: {sm_supp.year}  "
+          f"state: {sm_supp.state}  muni: {sm_supp.muni}  "
+          f"class: {sm_supp.cls}  factor: {sm_supp.factor:.2e}")
+    if sm_vs:
+        print(f"     Secondary veg  — area: {sm_vs.area}  year: {sm_vs.year}  "
+              f"class: {sm_vs.cls}  age: {sm_vs.age}")
+
+    # ── 3. Compute parameters ─────────────────────────────────────────────
+    print("\n  [3/5] Computing parameters P1–P9 via DuckDB...")
+
+    p1 = p1_suppression_series(all_supp, sm_supp)
+    print(f"     P1 rows: {len(p1)}")
+
+    p2 = p2_cumulative(p1)
+    print(f"     P2 rows: {len(p2)}")
+
+    p3 = p3_nv_remaining(p2)
+    print(f"     P3 rows: {len(p3)}")
+
+    p4 = p4_nv_by_class(all_supp, sm_supp)
+    print(f"     P4 rows: {len(p4)}")
+
+    p5 = p5_sv_extent(vs_files, sm_vs) if sm_vs else []
+    print(f"     P5 rows: {len(p5)}")
+
+    p6 = p6_sv_increment(p5)
+    print(f"     P6 rows: {len(p6)}")
+
+    p7_pt = p7_sv_by_age_class(vs_files, sm_vs, "pt") if sm_vs else []
+    p7_en = p7_sv_by_age_class(vs_files, sm_vs, "en") if sm_vs else []
+    print(f"     P7 rows: {len(p7_pt)}")
+
+    p8 = p8_sv_by_land_use(vs_files, sm_vs) if sm_vs else []
+    print(f"     P8 rows: {len(p8)}")
+
+    p9 = p9_muni_state_matrix(amazon_files or all_supp, sm_supp, "suppression")
+    print(f"     P9 rows: {len(p9)}")
+
+    # ── 4. Generate charts ────────────────────────────────────────────────
+    print("\n  [4/5] Generating publication-quality charts...")
+
+    # P1 national aggregate (year, km2 only)
+    p1_nat = [(r[0], r[-1]) for r in p1
+              if len(r) == 2 or (len(r) == 3 and not sm_supp.state)
+              or (len(r) >= 2)]
+    # Deduplicate to national total per year
+    nat_dict: dict[int, float] = {}
+    for r in p1:
+        yr = int(r[0]); km2 = float(r[-1])
+        nat_dict[yr] = nat_dict.get(yr, 0) + km2
+    p1_nat = [(y, v) for y, v in sorted(nat_dict.items())]
+
+    p5_nat_dict: dict[int, float] = {}
+    for r in p5:
+        yr = int(r[0]); km2 = float(r[-1])
+        p5_nat_dict[yr] = p5_nat_dict.get(yr, 0) + km2
+    p5_nat = [(y, v) for y, v in sorted(p5_nat_dict.items())]
+
+    p6_nat_dict: dict[int, float] = {}
+    for r in p6:
+        yr = int(r[0]); inc = float(r[-1])
+        p6_nat_dict[yr] = p6_nat_dict.get(yr, 0) + inc
+    p6_nat = [(y, v, p6_nat_dict.get(y, 0)) for y, v in sorted(p5_nat_dict.items())]
+
+    chart_paths: dict[str, Path | None] = {}
+    for lang in ("pt", "en"):
+        p7_lang = p7_pt if lang == "pt" else p7_en
+        chart_paths[f"suppression_trend_{lang}"]     = chart_suppression_trend(p1_nat, lang)
+        chart_paths[f"cumulative_suppression_{lang}"] = chart_cumulative_suppression(p2, lang)
+        chart_paths[f"sv_dynamics_{lang}"]            = chart_sv_dynamics(p5_nat, lang) if p5_nat else None
+        chart_paths[f"sv_increment_{lang}"]           = chart_sv_increment(p6_nat, lang) if p6_nat else None
+        chart_paths[f"state_ranking_{lang}"]          = chart_state_ranking(p1, lang) if sm_supp.state else None
+        chart_paths[f"sv_subclass_{lang}"]            = chart_sv_subclass(p7_lang, lang) if p7_lang else None
+        print(f"     [{lang.upper()}] charts generated")
+
+    # ── 5. Export workbooks + PPTX ────────────────────────────────────────
+    print("\n  [5/5] Writing Excel workbooks and PowerPoint presentations...")
     date_str = datetime.now().strftime("%Y-%m-%d")
 
     for lang in ("pt", "en"):
+        p7_lang = p7_pt if lang == "pt" else p7_en
         wb = Workbook()
-        wb.remove(wb.active)   # remove default sheet
+        wb.remove(wb.active)
 
-        _sheet_amazon_series(wb, lang, amazon_series)
-        _sheet_biome_comparison(wb, lang, biome_data)
-        if state_data and ref_year:
-            _sheet_state_breakdown(wb, lang, state_data, ref_year)
-        _sheet_forest_cover(wb, lang)
-        _sheet_international(wb, lang)
-        _sheet_methodology(wb, lang)
+        _ws_p1(wb, lang, p1)
+        _ws_p2(wb, lang, p2)
+        _ws_p3(wb, lang, p3)
+        _ws_p4(wb, lang, p4)
+        _ws_p5(wb, lang, p5)
+        _ws_p6(wb, lang, p6)
+        _ws_p7(wb, lang, p7_lang)
+        _ws_p8(wb, lang, p8)
+        _ws_p9(wb, lang, p9)
+        _ws_methodology(wb, lang)
 
-        lang_label = "PT" if lang == "pt" else "EN"
-        out = TABLES_DIR / f"PRODES_Statistics_{lang_label}_{date_str}.xlsx"
+        ll  = "PT" if lang == "pt" else "EN"
+        out = TABLES_DIR / f"PRODES_Analytics_{ll}_{date_str}.xlsx"
         wb.save(str(out))
-        print(f"\n  Saved [{lang_label}]: {out}")
+        print(f"     [{ll}] Excel saved: {out}")
+
+        data = {"p9": p9}
+        prs  = build_pptx(lang, chart_paths, data)
+        ppt_out = TABLES_DIR / f"PRODES_Analytics_{ll}_{date_str}.pptx"
+        prs.save(str(ppt_out))
+        print(f"     [{ll}] PPTX  saved: {ppt_out}")
 
     print(f"\n{DIV}")
-    print(f"  Output folder: {TABLES_DIR}")
+    print(f"  Output folder : {TABLES_DIR}")
+    print(f"  Charts folder : {CHART_DIR}")
     print(f"{SEP}\n")
 
 

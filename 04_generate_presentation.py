@@ -102,6 +102,12 @@ from data_quality import (
     write_run_report,
 )
 from pipeline_contracts import GEOPARQUET_CONTRACT
+from prodes_config import (
+    GEOPARQUET_DIR,
+    PRESENTATIONS_DIR,
+    REPORTS_DIR,
+    ensure_pipeline_dirs,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +116,11 @@ from pipeline_contracts import GEOPARQUET_CONTRACT
 
 
 CONFIG: dict[str, object] = {
-    "output_path": HERE / "PRODES_Press_Briefing.pptx",
+    "output_path": PRESENTATIONS_DIR / "PRODES_Press_Briefing.pptx",
     "chart_dpi": 220,
     # Directory with GeoParquet files from script 02.
     # Leave as None to auto-detect from the standard location.
-    "geoparquet_dir": None,  # e.g. r"C:\Amintas\Prodes\geoparquet"
+    "geoparquet_dir": GEOPARQUET_DIR,
     # Policy targets (km²) — not data, not queried from GeoParquet.
     "target_2026_km2": 4_866,
     "target_2028_km2": 4_000,
@@ -122,7 +128,7 @@ CONFIG: dict[str, object] = {
 
 SEP = "=" * 65
 DIV = "-" * 65
-REPORT_DIR = HERE / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 _DUCKDB_CONN = None
 
@@ -270,7 +276,7 @@ def _duckdb():
 
 def _auto_geoparquet_dir() -> Path | None:
     """Return the standard GeoParquet directory if it exists."""
-    std = Path(r"C:\Amintas\Prodes\geoparquet")
+    std = GEOPARQUET_DIR
     return std if std.exists() else None
 
 
@@ -1720,7 +1726,7 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
     gpq_dir = (
         Path(str(CONFIG["geoparquet_dir"]))
         if CONFIG.get("geoparquet_dir")
-        else Path(r"C:\Amintas\Prodes\geoparquet")
+        else GEOPARQUET_DIR
     )
 
     # Try to load deforestation polygons
@@ -1885,7 +1891,7 @@ def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
     gpq_dir = (
         Path(str(CONFIG["geoparquet_dir"]))
         if CONFIG.get("geoparquet_dir")
-        else Path(r"C:\Amintas\Prodes\geoparquet")
+        else GEOPARQUET_DIR
     )
 
     # Forest cover reference (MapBiomas)
@@ -2181,6 +2187,7 @@ _BUILDERS = [
 
 
 def main() -> None:
+    ensure_pipeline_dirs()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  PRODES Press Briefing Generator  v{__version__}  |  {now}")

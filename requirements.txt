@@ -1,10 +1,10 @@
-# PRODES Pipeline — Python dependencies
-# Install with:  uv pip install -r requirements.txt
-#            or: pip install -r requirements.txt
+# PRODES Pipeline - Python dependencies
+# Recommended:
+#   python setup_env.py
 #
-# For geospatial packages on Windows, uv is strongly recommended:
-#   pip install uv
-#   uv pip install -r requirements.txt
+# Manual install:
+#   python -m pip install --upgrade pip uv
+#   python -m uv pip install -r requirements.txt
 
 # --- script 01 ---
 requests>=2.32
@@ -32,6 +32,6 @@ duckdb>=1.1
 # --- script 06 ---
 openpyxl>=3.1
 
-# --- optional: Selenium fallback for script 01 (auto-installed on demand) ---
+# --- optional: Selenium fallback for script 01 ---
 # selenium>=4.20
 # webdriver-manager>=4.0

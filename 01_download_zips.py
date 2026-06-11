@@ -101,6 +101,7 @@ from data_quality import (
     write_run_report,
 )
 from pipeline_contracts import ZIP_ARCHIVE_CONTRACT, ZIP_INVENTORY_CONTRACT
+from prodes_config import REPORTS_DIR, ZIP_ROOT, ensure_pipeline_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,7 @@ class ZipEntry(TypedDict):
 
 CONFIG: dict[str, Any] = {
     "base_url": "https://terrabrasilis.dpi.inpe.br/en/download-files/",
-    "root_folder": r"C:\Amintas\Prodes\zip",
+    "root_folder": ZIP_ROOT,
     "http_timeout": 30,
     "download_timeout": 600,
     "chunk_size": 32 * 1024 * 1024,  # 32 MB per stream chunk — maximize single-file throughput
@@ -148,7 +149,7 @@ STATIC_HTML_LIMIT_BYTES = 8 * 1024 * 1024
 _HTML_PARSER = "lxml" if importlib.util.find_spec("lxml") else "html.parser"
 SEP = "=" * 65
 DIV = "-" * 65
-REPORT_DIR = Path(__file__).parent / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 _EXISTING_ZIP_INDEX: dict[str, list[Path]] | None = None
 
@@ -296,7 +297,6 @@ def _find_chrome() -> str | None:
     for candidate in (
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Users\Amintas\AppData\Local\Google\Chrome\Application\chrome.exe",
     ):
         if Path(candidate).exists():
             return candidate
@@ -996,6 +996,7 @@ def _local_zip_quality() -> dict[str, Any]:
 
 def main() -> None:
     """Main function to discover, download, and validate TerraBrasilis ZIP files."""
+    ensure_pipeline_dirs()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  TerraBrasilis Download  v{__version__}  |  {now}")

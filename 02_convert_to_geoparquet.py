@@ -109,6 +109,7 @@ from data_quality import (
     write_run_report,
 )
 from pipeline_contracts import GEOPARQUET_CONTRACT, ZIP_ARCHIVE_CONTRACT
+from prodes_config import GEOPARQUET_DIR, REPORTS_DIR, ZIP_ROOT, ensure_pipeline_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +121,12 @@ CONFIG: dict[str, object] = {
     # Root directory that contains all dated download sub-folders.
     # All *.zip files found recursively are used; when the same filename
     # appears in multiple dated folders, the most recently modified copy wins.
-    "zip_root": r"C:\Amintas\Prodes\zip",
-    "dest_dir": r"C:\Amintas\Prodes\geoparquet",
+    "zip_root": ZIP_ROOT,
+    "dest_dir": GEOPARQUET_DIR,
     # ---- Extraction --------------------------------------------------------
     # Set to a path to keep extracted files between runs (faster re-runs).
     # None = use a temporary directory that is deleted after each run.
-    "extract_dir": None,  # e.g. r"C:\Amintas\Prodes\extracted"
+    "extract_dir": None,  # e.g. set PRODES_EXTRACT_DIR to keep extracted files
     # ---- Parallelism -------------------------------------------------------
     "n_workers": 8,
     # ---- Vector GeoParquet options -----------------------------------------
@@ -184,7 +185,7 @@ _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn"
 _RASTER_EXT = frozenset({".tif", ".tiff"})
 SEP = "=" * 65
 DIV = "-" * 65
-REPORT_DIR = Path(__file__).parent / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 _LAYER_CACHE_PATH = REPORT_DIR / "02_gpkg_layer_cache.json"
 _LAYER_CACHE_DIRTY = False
@@ -731,6 +732,7 @@ def list_outputs() -> None:
 
 def main() -> None:
     """Main function to orchestrate the conversion process."""
+    ensure_pipeline_dirs()
     t0 = time.perf_counter()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")

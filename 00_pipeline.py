@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from data_quality import configure_json_logging, write_run_report
+from prodes_config import REPORTS_DIR, ensure_pipeline_dirs
 
 # ---------------------------------------------------------------------------
 # Pipeline definition
@@ -40,7 +41,7 @@ STEPS: list[tuple[int, str, str]] = [
 SEP = "=" * 65
 DIV = "-" * 65
 HERE = Path(__file__).parent
-REPORT_DIR = HERE / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 
 
@@ -202,6 +203,7 @@ def main() -> None:
     """
     Main function to orchestrate the PRODES data pipeline.
     """
+    ensure_pipeline_dirs()
     selected_step_numbers, keep_going = _parse_args()
     steps_to_run = [s for s in STEPS if s[0] in selected_step_numbers]
     skipped_steps = [s for s in STEPS if s[0] not in selected_step_numbers]

@@ -46,7 +46,7 @@ P9  Administrative Cross-Tabulation
 
 OUTPUTS
 -------
-  C:\\Amintas\\Prodes\\tables\\
+  configured tables workspace
       PRODES_Analytics_PT_<date>.xlsx
       PRODES_Analytics_EN_<date>.xlsx
       PRODES_Analytics_PT_<date>.pptx
@@ -83,10 +83,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-HERE       = Path(__file__).parent
-TABLES_DIR = Path(r"C:\Amintas\Prodes\tables")
-GPQ_DIR    = Path(r"C:\Amintas\Prodes\geoparquet")
-CHART_DIR  = TABLES_DIR / "charts"
+HERE = Path(__file__).parent
+
+from prodes_config import (  # noqa: E402
+    GEOPARQUET_DIR,
+    REPORTS_DIR,
+    TABLES_DIR,
+    ensure_pipeline_dirs,
+)
+
+GPQ_DIR = GEOPARQUET_DIR
+CHART_DIR = TABLES_DIR / "charts"
 
 # ============================================================================
 # DEPENDENCY BOOTSTRAP
@@ -160,7 +167,7 @@ from pipeline_contracts import ANALYTICS_EXPORT_CONTRACT, GEOPARQUET_CONTRACT
 
 SEP = "=" * 70
 DIV = "-" * 70
-REPORT_DIR = HERE / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 _DUCKDB = duckdb.connect(":memory:")
 
@@ -1534,6 +1541,7 @@ def build_pptx(lang: str, chart_paths: dict[str, Path | None],
 # ============================================================================
 
 def main() -> None:
+    ensure_pipeline_dirs()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  PRODES Analytics Pipeline  v{__version__}  |  {now}")

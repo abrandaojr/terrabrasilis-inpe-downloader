@@ -26,7 +26,7 @@ ZIP_ARCHIVE_CONTRACT = DataContract(
     consumers=("02_convert_to_geoparquet.py",),
     freshness=FreshnessPolicy(max_age_hours=24 * 90, severity="warn"),
     min_rows=50,
-    notes="Non-empty, valid ZIP archives under C:/Amintas/Prodes/zip.",
+    notes="Non-empty, valid ZIP archives under the configured PRODES ZIP root.",
 )
 
 GEOPARQUET_CONTRACT = DataContract(
@@ -66,5 +66,5 @@ ANALYTICS_EXPORT_CONTRACT = DataContract(
     consumers=("analysts", "presentations", "external_reporting"),
     freshness=FreshnessPolicy(max_age_hours=24 * 30, severity="warn"),
     min_rows=1,
-    notes="Excel and PPTX analytic artifacts written under C:/Amintas/Prodes/tables.",
+    notes="Excel and PPTX analytic artifacts written under the configured tables workspace.",
 )

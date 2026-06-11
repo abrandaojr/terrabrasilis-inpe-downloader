@@ -17,6 +17,7 @@ env/
 ENV/
 
 # Output data (large binary files — do not commit)
+workspace/
 *.parquet
 *.tif
 *.tiff

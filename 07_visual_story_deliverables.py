@@ -95,6 +95,13 @@ from pptx.enum.text import PP_ALIGN  # noqa: E402
 from pptx.util import Inches, Pt  # noqa: E402
 
 from data_quality import validate_nonempty_files, write_run_report
+from prodes_config import (
+    FIGURES_DIR,
+    PRESENTATIONS_DIR,
+    REPORTS_DIR,
+    TABLES_DIR,
+    ensure_pipeline_dirs,
+)
 
 
 HERE = Path(__file__).parent
@@ -104,12 +111,12 @@ CONFIG: dict[str, Any] = {
     "project_name": "PRODES_VISUAL_STORY",
     "author": "Amintas Brandao Jr.",
     "source_caption": "Source: INPE/PRODES; project targets supplied by project configuration.",
-    "output_dir": HERE,
-    "figure_dir": HERE / "figures",
-    "report_dir": HERE / "reports",
-    "pptx_path": HERE / f"PRODES_VISUAL_STORY_{DATE_STR}.pptx",
-    "xlsx_path": HERE / f"PRODES_VISUAL_STORY_{DATE_STR}.xlsx",
-    "chart_path": HERE / "figures" / f"prodes_annual_deforestation_{DATE_STR}.png",
+    "output_dir": PRESENTATIONS_DIR,
+    "figure_dir": FIGURES_DIR,
+    "report_dir": REPORTS_DIR,
+    "pptx_path": PRESENTATIONS_DIR / f"PRODES_VISUAL_STORY_{DATE_STR}.pptx",
+    "xlsx_path": TABLES_DIR / f"PRODES_VISUAL_STORY_{DATE_STR}.xlsx",
+    "chart_path": FIGURES_DIR / f"prodes_annual_deforestation_{DATE_STR}.png",
     "slide_width_in": 13.333,
     "slide_height_in": 7.5,
     "font_family": "Aptos",
@@ -479,6 +486,7 @@ def build_workbook(rows: list[VisualRecord], diagnosis: list[dict[str, str]], ch
 
 def main() -> None:
     """Build both visual communication deliverables and print a structured summary."""
+    ensure_pipeline_dirs()
     CONFIG["figure_dir"].mkdir(parents=True, exist_ok=True)
     CONFIG["report_dir"].mkdir(parents=True, exist_ok=True)
 

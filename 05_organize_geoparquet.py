@@ -1,7 +1,7 @@
 """
 05_organize_geoparquet.py
 =========================
-Reorganizes C:\\Amintas\\Prodes\\geoparquet by:
+Reorganizes the configured GeoParquet workspace by:
 
   1. MOVING (not copying) every parquet / tif file into a clean,
      date-agnostic folder structure:
@@ -104,18 +104,19 @@ from data_quality import (
     write_run_report,
 )
 from pipeline_contracts import GEOPARQUET_CONTRACT
+from prodes_config import GEOPARQUET_DIR, REPORTS_DIR, ensure_pipeline_dirs
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, object] = {
-    "geoparquet_dir": r"C:\Amintas\Prodes\geoparquet",
+    "geoparquet_dir": GEOPARQUET_DIR,
 }
 
 SEP = "=" * 65
 DIV = "-" * 65
-REPORT_DIR = HERE / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 
 # ---------------------------------------------------------------------------
@@ -389,6 +390,7 @@ def print_summary(organized: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    ensure_pipeline_dirs()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  GeoParquet Organizer  v{__version__}  |  {now}")

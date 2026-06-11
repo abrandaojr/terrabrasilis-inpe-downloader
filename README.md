@@ -1,213 +1,232 @@
-# PRODES Data Pipeline
+# PRODES TerraBrasilis Pipeline
 
-A collection of Python scripts to download, convert, visualize, and present
-deforestation data from INPE's [TerraBrasilis](https://terrabrasilis.dpi.inpe.br/en/download-files/) platform (PRODES).
+Portable Python scripts to download, convert, validate, analyze, and present
+INPE PRODES deforestation data from TerraBrasilis.
 
-**Author:** Amintas Brandão Jr. \<abrandaojr@gmail.com\>  
-**Affiliation:** Imazon — Instituto do Homem e Meio Ambiente da Amazônia
+Author: Amintas Brandao Jr. `<abrandaojr@gmail.com>`  
+Affiliation: Imazon - Instituto do Homem e Meio Ambiente da Amazonia
 
----
+## What This Repository Does
 
-## Pipeline Overview
+- Downloads public PRODES ZIP archives from TerraBrasilis.
+- Converts vector layers to GeoParquet and rasters to Cloud-Optimized GeoTIFF.
+- Builds quality reports, catalogs, charts, Excel workbooks, and PowerPoint decks.
+- Creates every required local folder automatically.
+- Runs on any machine with Python 3.11+ installed.
 
-```
-TerraBrasilis website
-        │
-        ▼
-01_download_zips.py          ← scrape + download all .zip files
-        │                       fallback: opens browser if scraping fails
-        ▼  (ZIP archives)
-02_convert_to_geoparquet.py  ← convert all formats in one pass
-        │  Vectors (SHP/GPKG) → GeoParquet (Hilbert sort, zstd)
-        │  Rasters (TIF/TIFF) → COG GeoTIFF (ESRI:102033, zonal-stats optimized)
-        │
-        ▼  (analysis-ready GeoParquet files)
-03_deforestation_chart.py    ← annual deforestation rate chart (PNG)
-04_generate_presentation.py  ← bilingual press PowerPoint with maps (PT-BR + EN-US)
-05_organize_geoparquet.py    ← catalog + clean _organized/ folder structure
-06_export_tables.py          ← all tables exported to Excel (PT-BR + EN-US)
-```
+No machine-specific path is required. By default, generated files are written to
+`workspace/` inside the cloned repository. Set `PRODES_HOME` to use another disk
+or folder.
 
-Run the full pipeline with a single command:
+## Quick Start
 
 ```bash
-python 00_pipeline.py              # all steps, stop on first failure
-python 00_pipeline.py -k           # all steps, continue past failures
-python 00_pipeline.py --from 2     # resume from step 2
-python 00_pipeline.py --steps 1 3  # run only steps 1 and 3
-python 00_pipeline.py --from 2 -k  # resume from step 2, keep going on error
+git clone https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git
+cd terrabrasilis-inpe-downloader
+python setup_env.py
 ```
 
----
-
-## Scripts
-
-### `01_download_zips.py`
-
-Discovers, downloads, and validates all `.zip` files from TerraBrasilis.
-
-**Features:**
-- Static HTML scraping with `lxml`/`html.parser` fallback
-- Selenium fallback if JS rendering is required (Chrome must be installed)
-- If both scraping methods fail, **opens the download page in your default browser**
-- Inventory table: already-downloaded vs. pending files
-- Parallel-safe resume support — interrupted downloads continue from where they stopped
-- ZIP integrity check + automatic repair loop (up to 3 attempts per file)
-- Permanent skip list via `CONFIG["skip_files"]`
-- Saves `validation_report.json` and a CSV/JSON index of all files found
-
-**Configuration** (`CONFIG` dict at the top of the file):
-
-| Key | Default | Description |
-|---|---|---|
-| `base_url` | TerraBrasilis download page | Source URL to scrape |
-| `root_folder` | `C:\Amintas\Prodes\zip` | Root storage directory |
-| `download_timeout` | `600` s | Per-file download timeout |
-| `chunk_size` | `32 MB` | Stream chunk size (maximizes throughput) |
-| `skip_files` | `["prodes_brasil_2023_arte.zip"]` | Files to permanently skip |
+Activate the environment:
 
 ```bash
-python 01_download_zips.py
+# Windows PowerShell
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
 ```
 
----
-
-### `02_convert_to_geoparquet.py`
-
-Converts all PRODES ZIP archives in a single pass. Handles both vectors and rasters.
-
-**Vectors (SHP / GPKG)** → GeoParquet
-- Hilbert curve row ordering via [`vector-to-geoparquet`](https://github.com/abrandaojr/vector-to-geoparquet)
-- zstd compression, configurable row group size
-- Incremental: skips already-converted files
-
-**Rasters (TIF / TIFF)** → Cloud-Optimized GeoTIFF
-- Reprojects to **ESRI:102033** (South America Equidistant Conic — equal-area, required for correct zonal stats)
-- 512×512 internal tiles and DEFLATE+predictor=2 (optimal for CPU-bound zonal stats on 64 GB RAM)
-- Internal overviews ×2, ×4, ×8, ×16, ×32
-
-**Configuration** (`CONFIG` dict at the top of the file):
-
-| Key | Default | Description |
-|---|---|---|
-| `source_dir` | `None` (auto-detects most recent dated folder) | Directory with input ZIPs |
-| `dest_dir` | `C:\Amintas\Prodes\geoparquet` | Output directory |
-| `n_workers` | `8` | Parallel conversion threads |
-| `tile_size_m` | `25 000` | Hilbert sort tile granularity (m) |
-| `compression` | `zstd` | Vector Parquet compression |
-| `hilbert_p` | `15` | Hilbert curve precision (2^p grid) |
-| `raster_crs` | `ESRI:102033` | Target CRS for all rasters |
-| `cog_tile_px` | `512` | Internal COG tile size (px) |
-| `raster_compress` | `DEFLATE` | Raster compression codec |
-| `overview_levels` | `[2,4,8,16,32]` | Overview decimation factors |
+Run the full pipeline:
 
 ```bash
-python 02_convert_to_geoparquet.py           # convert
-python 02_convert_to_geoparquet.py --list    # list existing outputs with CRS info
+python 00_pipeline.py
 ```
 
----
-
-### `03_deforestation_chart.py`
-
-Generates a publication-ready bar chart of annual Amazon deforestation rates
-(INPE/PRODES), including historical data and 2028 project targets.
-
-**Output:** `amazon_deforestation_norad.png`
-
-**Configuration** (`CONFIG` dict at the top of the file):
-
-| Key | Default | Description |
-|---|---|---|
-| `output_path` | `amazon_deforestation_norad.png` | Output file path |
-| `dpi` | `220` | Image resolution |
+Useful run modes:
 
 ```bash
-python 03_deforestation_chart.py
+python 00_pipeline.py -k
+python 00_pipeline.py --from 2
+python 00_pipeline.py --steps 1 3
+python 00_pipeline.py --from 2 -k
 ```
 
----
+The individual scripts also auto-install missing Python packages into the active
+interpreter, but `setup_env.py` is the recommended reproducible setup path.
 
-### `04_generate_presentation.py`
+## Portable Workspace
 
-Generates a 20-slide bilingual PowerPoint for press briefings on PRODES data.
-Slides 1–10 in PT-BR; slides 11–20 in EN-US.
+Default layout:
 
-**Slides per section:**
+```text
+repository/
+  00_pipeline.py
+  01_download_zips.py
+  ...
+  workspace/
+    zip/
+    geoparquet/
+    tables/
+      charts/
+    figures/
+    presentations/
+    reports/
+```
 
-| # | Content | Visual |
-|---|---|---|
-| 1 / 11 | Cover | Title + color bar |
-| 2 / 12 | Lead stat: 56% decline | Large number card |
-| 3 / 13 | Amazon historical series 2015–2028 | Bar chart (NYT style) |
-| 4 / 14 | Deforestation by biome (2023) | Horizontal bars |
-| 5 / 15 | Cerrado spotlight | Two stat cards |
-| 6 / 16 | Forest cover remaining % | Horizontal bars (color-coded) |
-| 7 / 17 | 2028 target trajectory | Bars + dashed projection line |
-| 8 / 18 | International comparison (GFW/FAO) | Horizontal bars |
-| 9 / 19 | Drivers & risks | Text with ▲▼ icons |
-| 10 / 20 | Key takeaways | 3 numbered cards |
-
-**Output:** `PRODES_Press_Briefing.pptx`
-
-**Data sources:** All PRODES statistics calculated on-the-fly from GeoParquet files generated by script 02. Reference data (forest cover % from MapBiomas, international comparison from GFW/FAO) kept as labeled constants.
-
-**Configuration** (`CONFIG` dict at the top of the file):
-
-| Key | Default | Description |
-|---|---|---|
-| `output_path` | `PRODES_Press_Briefing.pptx` | Output file |
-| `chart_dpi` | `220` | Chart image resolution |
+Override the workspace:
 
 ```bash
-python 04_generate_presentation.py
+# Windows PowerShell
+$env:PRODES_HOME = "D:\prodes-workspace"
+
+# macOS / Linux
+export PRODES_HOME="/data/prodes-workspace"
 ```
 
----
+Optional advanced overrides:
+
+```text
+PRODES_ZIP_ROOT
+PRODES_GEOPARQUET_DIR
+PRODES_TABLES_DIR
+PRODES_FIGURES_DIR
+PRODES_REPORTS_DIR
+PRODES_PRESENTATIONS_DIR
+PRODES_EXTRACT_DIR
+```
+
+## Pipeline
+
+```text
+TerraBrasilis download page
+  -> 01_download_zips.py
+  -> 02_convert_to_geoparquet.py
+  -> 03_deforestation_chart.py
+  -> 04_generate_presentation.py
+  -> 05_organize_geoparquet.py
+  -> 06_export_tables.py
+  -> 07_visual_story_deliverables.py
+```
+
+### 01 Download ZIPs
+
+Discovers, downloads, resumes, and validates TerraBrasilis ZIP archives.
+
+Key outputs:
+
+- `workspace/zip/YYYY-MM-DD/**/*.zip`
+- `workspace/zip/YYYY-MM-DD/terrabrasilis_zips.csv`
+- `workspace/zip/YYYY-MM-DD/terrabrasilis_zips.json`
+- `workspace/reports/*.json`
+
+### 02 Convert to GeoParquet and COG
+
+Converts vector data to GeoParquet and raster data to Cloud-Optimized GeoTIFF.
+
+Key outputs:
+
+- `workspace/geoparquet/**/*.parquet`
+- `workspace/geoparquet/**/*.tif`
+- `workspace/reports/02_gpkg_layer_cache.json`
+
+### 03 Chart
+
+Creates a publication-ready annual deforestation chart.
+
+Key output:
+
+- `workspace/figures/amazon_deforestation_norad.png`
+
+### 04 Presentation
+
+Creates a bilingual press briefing PowerPoint.
+
+Key output:
+
+- `workspace/presentations/PRODES_Press_Briefing.pptx`
+
+### 05 Organize GeoParquet
+
+Builds a cleaner cataloged GeoParquet folder structure.
+
+Key output:
+
+- `workspace/geoparquet/_organized/`
+
+### 06 Export Tables
+
+Exports analytical tables and charts.
+
+Key outputs:
+
+- `workspace/tables/PRODES_Analytics_*.xlsx`
+- `workspace/tables/PRODES_Analytics_*.pptx`
+- `workspace/tables/charts/*.png`
+
+### 07 Visual Story Deliverables
+
+Creates additional didactic PowerPoint and Excel deliverables.
+
+Key outputs:
+
+- `workspace/presentations/PRODES_VISUAL_STORY_*.pptx`
+- `workspace/tables/PRODES_VISUAL_STORY_*.xlsx`
+- `workspace/figures/prodes_annual_deforestation_*.png`
 
 ## Dependencies
 
-All scripts **auto-install their dependencies** on first run via `pip`/`uv`.
-For a manual install:
+Required:
+
+- Python 3.11+
+- Internet access for TerraBrasilis downloads and first-time dependency install
+- Chrome or Chromium only if the Selenium fallback is needed for JavaScript
+  rendering
+
+Recommended setup:
 
 ```bash
-# Recommended: use uv for faster installs and better Windows wheel resolution
-pip install uv
-uv pip install -r requirements.txt
+python setup_env.py
 ```
 
-Python **3.11+** recommended.
+Manual setup:
 
----
-
-## Directory Layout
-
-```
-C:\Amintas\Prodes\
-├── zip\
-│   └── YYYY-MM-DD\                   ← date-stamped download folders (script 01)
-│       ├── <Biome>\
-│       │   └── <Category>\
-│       │       └── *.zip
-│       ├── terrabrasilis_zips.csv
-│       ├── terrabrasilis_zips.json
-│       └── validation_report.json
-└── geoparquet\                        ← converted outputs (script 02)
-    ├── <rel_dir>\
-    │   └── <zip_stem>\
-    │       ├── <gpkg_stem>\
-    │       │   └── <layer>.parquet    ← vector layers (Hilbert sorted)
-    │       ├── <shp_stem>.parquet     ← orphan shapefiles
-    │       └── <tif_stem>.tif         ← COG GeoTIFF (ESRI:102033)
-    └── report_YYYYMMDD_HHMMSS.json
-
-scripts\
-├── amazon_deforestation_norad.png     ← output of script 03
-└── PRODES_Press_Briefing.pptx         ← output of script 04
+```bash
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+python -m pip install --upgrade pip uv
+python -m uv pip install -r requirements.txt
 ```
 
----
+On macOS/Linux, activate with `source .venv/bin/activate`.
+
+## Quality and Observability
+
+Each stage writes JSON quality reports to `workspace/reports/`, including:
+
+- input and output inventory
+- freshness checks
+- row and file counts
+- lineage records
+- stage timing
+
+Run a syntax check before publishing changes:
+
+```bash
+python -m py_compile *.py
+```
+
+## Releases and Packages
+
+- Release notes live in `CHANGELOG.md`.
+- Release process notes live in `RELEASES.md`.
+- Package metadata lives in `pyproject.toml`.
+- Generated data products are intentionally not published as GitHub Packages.
+
+## Citation
+
+If you use this repository, cite this project and cite INPE/PRODES according to
+the official data provider requirements.
 
 ## License
 
-MIT
+MIT. See `LICENSE`.

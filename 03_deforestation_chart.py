@@ -130,6 +130,7 @@ from data_quality import (
     validate_nonempty_files,
     write_run_report,
 )
+from prodes_config import FIGURES_DIR, REPORTS_DIR, ensure_pipeline_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +138,12 @@ from data_quality import (
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, object] = {
-    "output_path": HERE / "amazon_deforestation_norad.png",
+    "output_path": FIGURES_DIR / "amazon_deforestation_norad.png",
     "dpi": 220,
 }
 
 SEP = "=" * 65
-REPORT_DIR = HERE / "reports"
+REPORT_DIR = REPORTS_DIR
 OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 # DIV is defined but not used. Removed for PEP 8.
 
@@ -189,6 +190,7 @@ def _validate_inputs() -> dict[str, object]:
 
 def main() -> None:
     """Generates and saves the Amazon deforestation chart."""
+    ensure_pipeline_dirs()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
     print(f"  Deforestation Chart  v{__version__}  |  {now}")
@@ -278,7 +280,9 @@ def main() -> None:
 
     plt.subplots_adjust(left=0.04, right=0.94, top=0.78, bottom=0.10)
 
-    output = str(CONFIG["output_path"])
+    output_path = Path(str(CONFIG["output_path"]))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output = str(output_path)
     plt.savefig(output, dpi=CONFIG["dpi"], bbox_inches="tight", facecolor="white")
     artifacts = validate_nonempty_files([Path(output)], "chart")
     metrics = stage_timer.finish(

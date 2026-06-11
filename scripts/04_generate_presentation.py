@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import io
@@ -8,10 +8,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 __version__ = "2.0.0"
 __all__: list[str] = []
 
-HERE = Path(__file__).parent  # script directory — used for output paths
+HERE = Path(__file__).parent  # script directory â€” used for output paths
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +93,7 @@ from pptx.dml.color import RGBColor  # noqa: E402
 from pptx.enum.text import PP_ALIGN as MsoParagraphAlignment  # noqa: E402
 from pptx.util import Pt  # noqa: E402
 
-from data_quality import (
+from prodes_pipeline.data_quality import (
     LineageRecord,
     StageTimer,
     configure_json_logging,
@@ -101,8 +105,8 @@ from data_quality import (
     validate_nonempty_files,
     write_run_report,
 )
-from pipeline_contracts import GEOPARQUET_CONTRACT
-from prodes_config import (
+from prodes_pipeline.pipeline_contracts import GEOPARQUET_CONTRACT
+from prodes_pipeline.config import (
     GEOPARQUET_DIR,
     PRESENTATIONS_DIR,
     REPORTS_DIR,
@@ -111,7 +115,7 @@ from prodes_config import (
 
 
 # ---------------------------------------------------------------------------
-# CONFIG  ← the only section that needs to be edited
+# CONFIG  â† the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
 
@@ -121,7 +125,7 @@ CONFIG: dict[str, object] = {
     # Directory with GeoParquet files from script 02.
     # Leave as None to auto-detect from the standard location.
     "geoparquet_dir": GEOPARQUET_DIR,
-    # Policy targets (km²) — not data, not queried from GeoParquet.
+    # Policy targets (kmÂ²) â€” not data, not queried from GeoParquet.
     "target_2026_km2": 4_866,
     "target_2028_km2": 4_000,
 }
@@ -134,20 +138,20 @@ _DUCKDB_CONN = None
 
 
 # ---------------------------------------------------------------------------
-# REFERENCE DATA  (sources outside the PRODES pipeline — kept as constants)
+# REFERENCE DATA  (sources outside the PRODES pipeline â€” kept as constants)
 # ---------------------------------------------------------------------------
 
 
-# Remaining native vegetation (% of original biome area) — MapBiomas 2023
+# Remaining native vegetation (% of original biome area) â€” MapBiomas 2023
 # Source: https://mapbiomas.org
 _COVER_PCT: dict[str, dict[str, float]] = {
     "pt": {
         "Pantanal": 86.0,
-        "Amazônia": 81.0,
+        "AmazÃ´nia": 81.0,
         "Caatinga": 60.0,
         "Cerrado": 53.0,
         "Pampa": 38.0,
-        "Mata Atlântica": 13.0,
+        "Mata AtlÃ¢ntica": 13.0,
     },
     "en": {
         "Pantanal": 86.0,
@@ -159,7 +163,7 @@ _COVER_PCT: dict[str, dict[str, float]] = {
     },
 }
 
-# International tropical primary forest loss 2023 (km²) — GFW / FAO
+# International tropical primary forest loss 2023 (kmÂ²) â€” GFW / FAO
 # Different methodology from PRODES (tree-cover loss, not deforestation).
 _INTL_LOSS_KM2: dict[str, int] = {
     "Brazil": 9_064,  # PRODES figure for comparability
@@ -171,21 +175,21 @@ _INTL_LOSS_KM2: dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
-# STATS  — populated from GeoParquet in main(), never hardcoded
+# STATS  â€” populated from GeoParquet in main(), never hardcoded
 # ---------------------------------------------------------------------------
 
 
 # All values computed on-the-fly from actual GeoParquet data.
 _STATS: dict = {}
 
-# Biome directory name (from TerraBrasilis ZIP structure) → display names
+# Biome directory name (from TerraBrasilis ZIP structure) â†’ display names
 _BIOME_TO_PT: dict[str, str] = {
-    "Amazon Biome": "Amazônia Legal",
-    "Legal Amazon": "Amazônia Legal",
+    "Amazon Biome": "AmazÃ´nia Legal",
+    "Legal Amazon": "AmazÃ´nia Legal",
     "Cerrado": "Cerrado",
     "Caatinga": "Caatinga",
     "Pantanal": "Pantanal",
-    "Mata Atlantica": "Mata Atlântica",
+    "Mata Atlantica": "Mata AtlÃ¢ntica",
     "Pampa": "Pampa",
 }
 _BIOME_TO_EN: dict[str, str] = {
@@ -228,7 +232,7 @@ _AUX_KEYWORDS = (
     "carbon",
     "biomass",
 )
-# Candidate column names (area in km², checked in priority order)
+# Candidate column names (area in kmÂ², checked in priority order)
 _AREA_COLS = ("areakm", "area_km", "area_km2", "areakm2", "area")
 # Candidate column names for year
 _YEAR_COLS = ("year", "ano", "yr", "data_year")
@@ -238,13 +242,13 @@ _YEAR_COLS = ("year", "ano", "yr", "data_year")
 # keyword used in _find_border_file (derived from _BIOME_TO_PT keys)
 _BIOME_LABEL_TO_FILE_KEYWORD: dict[str, str] = {
     "Pantanal": "pantanal",
-    "Amazônia": "amazon_biome_border",
+    "AmazÃ´nia": "amazon_biome_border",
     "Amazon": "amazon_biome_border",
     "Caatinga": "caatinga",
     "Cerrado": "cerrado",
     "Cerrado Savanna": "cerrado",
     "Pampa": "pampa",
-    "Mata Atlântica": "mata_atlantica",
+    "Mata AtlÃ¢ntica": "mata_atlantica",
     "Atlantic Forest": "mata_atlantica",
 }
 
@@ -283,7 +287,7 @@ def _auto_geoparquet_dir() -> Path | None:
 def _detect_area_year(files: list[Path]) -> tuple[str | None, str | None]:
     """
     Inspect a sample parquet file's schema to find the area and year columns.
-    Returns (area_col, year_col) — either may be None.
+    Returns (area_col, year_col) â€” either may be None.
     """
     import pyarrow.parquet as pq
 
@@ -309,9 +313,9 @@ def _detect_area_year(files: list[Path]) -> tuple[str | None, str | None]:
 def _infer_km2_factor(files: list[Path], area_col: str) -> float:
     """
     Read a few area values and guess the unit:
-      km² → factor 1.0
-      ha  → factor 0.01
-      m²  → factor 0.000001
+      kmÂ² â†’ factor 1.0
+      ha  â†’ factor 0.01
+      mÂ²  â†’ factor 0.000001
     """
     import pyarrow.parquet as pq
 
@@ -330,16 +334,16 @@ def _infer_km2_factor(files: list[Path], area_col: str) -> float:
         return 1.0
     med = sorted(sample)[len(sample) // 2]
     if med > 500_000:
-        return 1 / 1_000_000  # m²
+        return 1 / 1_000_000  # mÂ²
     if med > 5_000:
         return 1 / 100  # ha
-    return 1.0  # km²
+    return 1.0  # kmÂ²
 
 
 def _query_series(
     files: list[Path], area_col: str, year_col: str, factor: float
 ) -> dict[int, float]:
-    """DuckDB: aggregate area by year, return {year: km²}."""
+    """DuckDB: aggregate area by year, return {year: kmÂ²}."""
     paths = [str(f).replace("\\", "/") for f in files]
     sql = f"""
         SELECT CAST("{year_col}" AS INTEGER)     AS yr,
@@ -457,13 +461,13 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
     print(f"  [data] Biome folders found: {sorted(biome_files)}")
 
     result: dict = {
-        "amazon_km2": {},  # {year: km²}
-        "biomes_km2_pt": {},  # {biome_name_pt: km²}
-        "biomes_km2_en": {},  # {biome_name_en: km²}
+        "amazon_km2": {},  # {year: kmÂ²}
+        "biomes_km2_pt": {},  # {biome_name_pt: kmÂ²}
+        "biomes_km2_en": {},  # {biome_name_en: kmÂ²}
         "biome_year": {},  # {biome_dir: year used}
     }
 
-    # ── Amazon annual series ─────────────────────────────────────────────
+    # â”€â”€ Amazon annual series â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     amazon_files = [
         f for bd, fs in biome_files.items() if bd in _AMAZON_DIRS for f in fs
     ]
@@ -475,7 +479,7 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
             if series:
                 result["amazon_km2"] = series
                 print(
-                    f"  [data] Amazon series: {min(series)}–{max(series)}  "
+                    f"  [data] Amazon series: {min(series)}â€“{max(series)}  "
                     f"({len(series)} yr)"
                 )
         else:
@@ -484,7 +488,7 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
                 f"(found: area_col={area_col})"
             )
 
-    # ── Per-biome total (most recent year with data) ─────────────────────
+    # â”€â”€ Per-biome total (most recent year with data) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ref_year = max(result["amazon_km2"]) if result["amazon_km2"] else None
 
     for biome_dir, files in biome_files.items():
@@ -518,7 +522,7 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
             result["biomes_km2_pt"][name_pt] = total
             result["biomes_km2_en"][name_en] = total
             result["biome_year"][biome_dir] = use_year
-            print(f"  [data] {biome_dir}: {total:,.0f} km² (year {use_year})")
+            print(f"  [data] {biome_dir}: {total:,.0f} kmÂ² (year {use_year})")
 
     if not result["amazon_km2"] and not result["biomes_km2_pt"]:
         raise RuntimeError(
@@ -635,7 +639,7 @@ def _rgb(hex_color: str) -> RGBColor:
 
 
 COPY: dict[str, dict[str, str]] = {
-    "sec_amazon": {"pt": "AMAZÔNIA LEGAL", "en": "LEGAL AMAZON"},
+    "sec_amazon": {"pt": "AMAZÃ”NIA LEGAL", "en": "LEGAL AMAZON"},
     "sec_biomes": {"pt": "POR BIOMA", "en": "BY BIOME"},
     "sec_cerrado": {"pt": "CERRADO EM FOCO", "en": "CERRADO SPOTLIGHT"},
     "sec_cover": {"pt": "COBERTURA FLORESTAL", "en": "FOREST COVER"},
@@ -645,21 +649,21 @@ COPY: dict[str, dict[str, str]] = {
     "sec_takeaway": {"pt": "MENSAGENS-CHAVE", "en": "KEY TAKEAWAYS"},
     # Cover
     "cover_title": {
-        "pt": "Desmatamento no Brasil\nCaiu — Mas Ainda Não Chega.",
-        "en": "Brazil's Deforestation\nIs Down — But Not Enough.",
+        "pt": "Desmatamento no Brasil\nCaiu â€” Mas Ainda NÃ£o Chega.",
+        "en": "Brazil's Deforestation\nIs Down â€” But Not Enough.",
     },
     "cover_sub": {
-        "pt": "Dados PRODES · INPE  |  Apresentação para a Imprensa  ·  {year}",
-        "en": "PRODES · INPE Data  |  Press Briefing  ·  {year}",
+        "pt": "Dados PRODES Â· INPE  |  ApresentaÃ§Ã£o para a Imprensa  Â·  {year}",
+        "en": "PRODES Â· INPE Data  |  Press Briefing  Â·  {year}",
     },
     "cover_credit": {
-        "pt": "Imazon — Instituto do Homem e Meio Ambiente da Amazônia",
-        "en": "Imazon — Institute for People and the Environment in Amazonia",
+        "pt": "Imazon â€” Instituto do Homem e Meio Ambiente da AmazÃ´nia",
+        "en": "Imazon â€” Institute for People and the Environment in Amazonia",
     },
     # Slide 2: lead stat
     "stat_headline": {
         "pt": (
-            "O desmatamento na Amazônia Legal caiu {pct_decline:.0f}% em "
+            "O desmatamento na AmazÃ´nia Legal caiu {pct_decline:.0f}% em "
             "{n_years_decline} anos."
         ),
         "en": (
@@ -669,61 +673,61 @@ COPY: dict[str, dict[str, str]] = {
     },
     "stat_body": {
         "pt": (
-            "De {peak_km2_pt} km² em {peak_year} para {current_km2_pt} km² "
-            "em {current_year} — menor área desmatada desde {first_year}.\n"
-            "Ainda assim, {ratio_to_target:.1f}× a meta estabelecida para 2028."
+            "De {peak_km2_pt} kmÂ² em {peak_year} para {current_km2_pt} kmÂ² "
+            "em {current_year} â€” menor Ã¡rea desmatada desde {first_year}.\n"
+            "Ainda assim, {ratio_to_target:.1f}Ã— a meta estabelecida para 2028."
         ),
         "en": (
-            "From {peak_km2_en} km² in {peak_year} to {current_km2_en} km² "
-            "in {current_year} — lowest figure since {first_year}.\n"
-            "Yet still {ratio_to_target:.1f}× the target set for 2028."
+            "From {peak_km2_en} kmÂ² in {peak_year} to {current_km2_en} kmÂ² "
+            "in {current_year} â€” lowest figure since {first_year}.\n"
+            "Yet still {ratio_to_target:.1f}Ã— the target set for 2028."
         ),
     },
     # Slide 3: historical
     "hist_headline": {
         "pt": (
-            "Pico em {peak_year}, queda constante desde então — meta ainda "
+            "Pico em {peak_year}, queda constante desde entÃ£o â€” meta ainda "
             "distante."
         ),
         "en": (
-            "Peak in {peak_year}, steady decline since — but the 2028 "
+            "Peak in {peak_year}, steady decline since â€” but the 2028 "
             "target remains out of reach."
         ),
     },
     "hist_sub": {
         "pt": (
-            "Desmatamento anual na Amazônia Legal (km²)  ·  "
-            "{first_year}–2028"
+            "Desmatamento anual na AmazÃ´nia Legal (kmÂ²)  Â·  "
+            "{first_year}â€“2028"
         ),
         "en": (
-            "Annual deforestation in Brazil's Legal Amazon (km²)  ·  "
-            "{first_year}–2028"
+            "Annual deforestation in Brazil's Legal Amazon (kmÂ²)  Â·  "
+            "{first_year}â€“2028"
         ),
     },
     # Slide 4: by biome
     "biome_headline": {
         "pt": (
-            "O Cerrado perde tanto quanto a Amazônia — e recebe menos atenção."
+            "O Cerrado perde tanto quanto a AmazÃ´nia â€” e recebe menos atenÃ§Ã£o."
         ),
         "en": (
-            "The Cerrado loses as much as the Amazon — and gets far less "
+            "The Cerrado loses as much as the Amazon â€” and gets far less "
             "attention."
         ),
     },
     "biome_sub": {
-        "pt": "Desmatamento por bioma brasileiro (km²)  ·  {biome_year}",
-        "en": "Deforestation by Brazilian biome (km²)  ·  {biome_year}",
+        "pt": "Desmatamento por bioma brasileiro (kmÂ²)  Â·  {biome_year}",
+        "en": "Deforestation by Brazilian biome (kmÂ²)  Â·  {biome_year}",
     },
     # Slide 5: Cerrado
     "cerrado_headline": {
-        "pt": "O Cerrado é o bioma brasileiro mais ameaçado proporcionalmente.",
+        "pt": "O Cerrado Ã© o bioma brasileiro mais ameaÃ§ado proporcionalmente.",
         "en": "The Cerrado is Brazil's most proportionally threatened biome.",
     },
     "cerrado_note": {
         "pt": (
             "O Cerrado abriga 5% da biodiversidade mundial e regula o ciclo "
-            "hídrico das principais bacias hidrográficas do Brasil. "
-            "Recebe menos de 10% dos recursos do Fundo Amazônia."
+            "hÃ­drico das principais bacias hidrogrÃ¡ficas do Brasil. "
+            "Recebe menos de 10% dos recursos do Fundo AmazÃ´nia."
         ),
         "en": (
             "The Cerrado harbors 5% of the world's biodiversity and regulates "
@@ -733,63 +737,63 @@ COPY: dict[str, dict[str, str]] = {
     },
     # Slide 6: forest cover
     "cover_headline": {
-        "pt": "Mata Atlântica: 13% restam. Pantanal: 86%. Cerrado: 53%.",
+        "pt": "Mata AtlÃ¢ntica: 13% restam. Pantanal: 86%. Cerrado: 53%.",
         "en": "Atlantic Forest: 13% remains. Pantanal: 86%. Cerrado: 53%.",
     },
     "cover_sub_text": {
         "pt": (
-            "Vegetação nativa remanescente por bioma (% da área original)  "
-            "·  MapBiomas 2023"
+            "VegetaÃ§Ã£o nativa remanescente por bioma (% da Ã¡rea original)  "
+            "Â·  MapBiomas 2023"
         ),
         "en": (
             "Remaining native vegetation by biome (% of original area)  "
-            "·  MapBiomas 2023"
+            "Â·  MapBiomas 2023"
         ),
     },
     # Slide 7: target
     "target_headline": {
         "pt": (
-            "A meta de {target_2028} km² para 2028 exige reduzir mais "
+            "A meta de {target_2028} kmÂ² para 2028 exige reduzir mais "
             "{pct_to_target:.0f}%."
         ),
         "en": (
-            "The {target_2028} km² target for 2028 requires a further "
+            "The {target_2028} kmÂ² target for 2028 requires a further "
             "{pct_to_target:.0f}% cut."
         ),
     },
     "target_sub": {
         "pt": (
-            "Trajetória observada e meta de redução (km²)  ·  "
-            "{first_year}–2028"
+            "TrajetÃ³ria observada e meta de reduÃ§Ã£o (kmÂ²)  Â·  "
+            "{first_year}â€“2028"
         ),
         "en": (
-            "Observed trend and reduction target (km²)  ·  "
-            "{first_year}–2028"
+            "Observed trend and reduction target (kmÂ²)  Â·  "
+            "{first_year}â€“2028"
         ),
     },
     # Slide 8: international
     "intl_headline": {
         "pt": (
-            "Brasil lidera a queda — mas ainda é o maior desmatador tropical."
+            "Brasil lidera a queda â€” mas ainda Ã© o maior desmatador tropical."
         ),
         "en": (
-            "Brazil leads the decline — but remains the world's largest "
+            "Brazil leads the decline â€” but remains the world's largest "
             "tropical deforester."
         ),
     },
     "intl_sub": {
         "pt": (
-            "Perda de floresta tropical por país (km²)  ·  2023  ·  "
+            "Perda de floresta tropical por paÃ­s (kmÂ²)  Â·  2023  Â·  "
             "Fonte: GFW / FAO"
         ),
         "en": (
-            "Tropical forest loss by country (km²)  ·  2023  ·  "
+            "Tropical forest loss by country (kmÂ²)  Â·  2023  Â·  "
             "Source: GFW / FAO"
         ),
     },
     "intl_note": {
         "pt": (
-            "* GFW mede perda de cobertura arbórea; PRODES mede desmatamento. "
+            "* GFW mede perda de cobertura arbÃ³rea; PRODES mede desmatamento. "
             "Metodologias distintas."
         ),
         "en": (
@@ -799,30 +803,30 @@ COPY: dict[str, dict[str, str]] = {
     },
     # Slide 9: causes
     "causes_headline": {
-        "pt": "O que explica a queda — e o que pode revertê-la.",
-        "en": "What drove the decline — and what could reverse it.",
+        "pt": "O que explica a queda â€” e o que pode revertÃª-la.",
+        "en": "What drove the decline â€” and what could reverse it.",
     },
     # Slide 10: takeaways
     "takeaway_headline": {
-        "pt": "Três mensagens desta apresentação.",
+        "pt": "TrÃªs mensagens desta apresentaÃ§Ã£o.",
         "en": "Three messages from this briefing.",
     },
     # Sources
     "src_prodes": {
-        "pt": "Fonte: INPE/PRODES · Calculado a partir dos dados GeoParquet",
-        "en": "Source: INPE/PRODES · Calculated from GeoParquet data",
+        "pt": "Fonte: INPE/PRODES Â· Calculado a partir dos dados GeoParquet",
+        "en": "Source: INPE/PRODES Â· Calculated from GeoParquet data",
     },
     "src_mapbiomas": {
-        "pt": "Fonte: MapBiomas 2023 · Mapeamento Anual da Cobertura e Uso da Terra",
-        "en": "Source: MapBiomas 2023 · Annual Land Cover and Use Mapping Project",
+        "pt": "Fonte: MapBiomas 2023 Â· Mapeamento Anual da Cobertura e Uso da Terra",
+        "en": "Source: MapBiomas 2023 Â· Annual Land Cover and Use Mapping Project",
     },
     "src_gfw": {
         "pt": (
-            "Fonte: Global Forest Watch / FAO 2023 · Dados aproximados — "
+            "Fonte: Global Forest Watch / FAO 2023 Â· Dados aproximados â€” "
             "metodologias distintas"
         ),
         "en": (
-            "Source: Global Forest Watch / FAO 2023 · Approximate data — "
+            "Source: Global Forest Watch / FAO 2023 Â· Approximate data â€” "
             "methodologies differ"
         ),
     },
@@ -841,14 +845,14 @@ def _t(key: str, lang: str) -> str:
 def _causes_items(lang: str) -> list[tuple[str, str, str, str]]:
     return [
         (
-            "▲",
+            "â–²",
             C_GREEN,
-            {"pt": "Fiscalização reforçada", "en": "Enforcement strengthened"}[
+            {"pt": "FiscalizaÃ§Ã£o reforÃ§ada", "en": "Enforcement strengthened"}[
                 lang
             ],
             (
-                "Ibama e PF multiplicaram autuações e embargos desde 2023. "
-                "Operações coordenadas reduziram o desmatamento ilegal."
+                "Ibama e PF multiplicaram autuaÃ§Ãµes e embargos desde 2023. "
+                "OperaÃ§Ãµes coordenadas reduziram o desmatamento ilegal."
             )
             if lang == "pt"
             else (
@@ -858,30 +862,30 @@ def _causes_items(lang: str) -> list[tuple[str, str, str, str]]:
             ),
         ),
         (
-            "▲",
+            "â–²",
             C_GREEN,
-            {"pt": "Financiamento climático", "en": "Climate finance increased"}[
+            {"pt": "Financiamento climÃ¡tico", "en": "Climate finance increased"}[
                 lang
             ],
             (
-                "Fundo Amazônia recebeu +R$ 3 bi em 2023–24 (Noruega, Alemanha, EUA). "
+                "Fundo AmazÃ´nia recebeu +R$ 3 bi em 2023â€“24 (Noruega, Alemanha, EUA). "
                 "Primeira fase do REDD+ Amazon operacional."
             )
             if lang == "pt"
             else (
-                "Amazon Fund received BRL 3 bn+ in 2023–24 (Norway, Germany, USA). "
+                "Amazon Fund received BRL 3 bn+ in 2023â€“24 (Norway, Germany, USA). "
                 "First phase of REDD+ Amazon operational."
             ),
         ),
         (
-            "▼",
+            "â–¼",
             C_RED,
-            {"pt": "Risco: anistia fundiária", "en": "Risk: land regularization bills"}[
+            {"pt": "Risco: anistia fundiÃ¡ria", "en": "Risk: land regularization bills"}[
                 lang
             ],
             (
                 "Projetos de lei que regularizam desmatamentos ilegais antes de 2008 "
-                "ameaçam criar incentivos para novos crimes ambientais."
+                "ameaÃ§am criar incentivos para novos crimes ambientais."
             )
             if lang == "pt"
             else (
@@ -900,25 +904,25 @@ def _takeaway_items(lang: str) -> list[tuple[str, str]]:
     return {
         "pt": [
             (
-                f"A queda de {pct:.0f}% é real — mas frágil.",
-                f"A redução desde {yr} é histórica. "
-                "Qualquer mudança na política de fiscalização pode revertê-la "
+                f"A queda de {pct:.0f}% Ã© real â€” mas frÃ¡gil.",
+                f"A reduÃ§Ã£o desde {yr} Ã© histÃ³rica. "
+                "Qualquer mudanÃ§a na polÃ­tica de fiscalizaÃ§Ã£o pode revertÃª-la "
                 "rapidamente.",
             ),
             (
-                "O Cerrado está em crise silenciosa.",
-                "Perde tanto quanto a Amazônia, tem 53% de cobertura original "
-                "e recebe proporcionalmente muito menos recursos e atenção.",
+                "O Cerrado estÃ¡ em crise silenciosa.",
+                "Perde tanto quanto a AmazÃ´nia, tem 53% de cobertura original "
+                "e recebe proporcionalmente muito menos recursos e atenÃ§Ã£o.",
             ),
             (
-                f"A meta de {_num(tgt,'pt')} km² em 2028 exige ação agora.",
-                f"Para chegar à meta, o Brasil precisa reduzir mais {nt:.0f}% "
-                "nos próximos três anos. O tempo está curto.",
+                f"A meta de {_num(tgt,'pt')} kmÂ² em 2028 exige aÃ§Ã£o agora.",
+                f"Para chegar Ã  meta, o Brasil precisa reduzir mais {nt:.0f}% "
+                "nos prÃ³ximos trÃªs anos. O tempo estÃ¡ curto.",
             ),
         ],
         "en": [
             (
-                f"The {pct:.0f}% decline is real — but fragile.",
+                f"The {pct:.0f}% decline is real â€” but fragile.",
                 f"The drop since {yr} is historic. "
                 "Any shift in enforcement policy could quickly reverse "
                 "those gains.",
@@ -930,7 +934,7 @@ def _takeaway_items(lang: str) -> list[tuple[str, str]]:
                 "political attention.",
             ),
             (
-                f"The {_num(tgt,'en')} km² target requires action now.",
+                f"The {_num(tgt,'en')} kmÂ² target requires action now.",
                 f"To reach the target, Brazil must cut a further {nt:.0f}% "
                 "in the next three years. Time is running short.",
             ),
@@ -1091,7 +1095,7 @@ def chart_amazon_historical(lang: str) -> io.BytesIO:
     ax.text(
         bx + 0.15,
         (t28 + cur_km2) / 2,
-        f"−{pct:.0f}%",
+        f"âˆ’{pct:.0f}%",
         va="center",
         fontsize=9.5,
         color=C_DARK,
@@ -1114,7 +1118,7 @@ def chart_by_biome(lang: str) -> io.BytesIO:
     biomes = [p[0] for p in pairs]
     values = [p[1] for p in pairs]
 
-    amazon_keywords = {"amazônia", "amazon", "legal"}
+    amazon_keywords = {"amazÃ´nia", "amazon", "legal"}
     cerrado_keywords = {"cerrado"}
     bar_colors = []
     for b in biomes:
@@ -1248,11 +1252,11 @@ def chart_target_trajectory(lang: str) -> io.BytesIO:
             9,
             True,
         )
-    tgt_lbl = "Trajetória da meta" if lang == "pt" else "Target trajectory"
+    tgt_lbl = "TrajetÃ³ria da meta" if lang == "pt" else "Target trajectory"
     ax.text(
         pos[i_28] + 0.12,
         t28 - max(all_vals) * 0.07,
-        f"← {tgt_lbl}",
+        f"â† {tgt_lbl}",
         ha="left",
         va="top",
         fontsize=8,
@@ -1472,15 +1476,15 @@ def s_cerrado_spotlight(prs: Presentation, lang: str) -> None:
     cards = [
         (
             _num(km2, lang),
-            "km² desmatados no Cerrado\n— quase o mesmo que a Amazônia"
+            "kmÂ² desmatados no Cerrado\nâ€” quase o mesmo que a AmazÃ´nia"
             if lang == "pt"
-            else "km² deforested in the Cerrado\n— almost as much as the Amazon",
+            else "kmÂ² deforested in the Cerrado\nâ€” almost as much as the Amazon",
         ),
         (
             "53%",
-            "de cobertura original remanescente\n— Mata Atlântica já perdeu 87%"
+            "de cobertura original remanescente\nâ€” Mata AtlÃ¢ntica jÃ¡ perdeu 87%"
             if lang == "pt"
-            else "of original cover remaining\n— Atlantic Forest already lost 87%",
+            else "of original cover remaining\nâ€” Atlantic Forest already lost 87%",
         ),
     ]
     for i, (num, lbl) in enumerate(cards):
@@ -1490,7 +1494,7 @@ def s_cerrado_spotlight(prs: Presentation, lang: str) -> None:
         _tb(sl, lbl, x + 0.25, 2.38, 3.85, 0.9, size=9.5, color=C_MED)
 
     _tb(sl, COPY["cerrado_note"][lang], 0.35, 3.55, 9.3, 1.0, size=9.5, color=C_MED)
-    _src(sl, COPY["src_prodes"][lang] + "  ·  MapBiomas 2023")
+    _src(sl, COPY["src_prodes"][lang] + "  Â·  MapBiomas 2023")
 
 
 def s_forest_cover(prs: Presentation, lang: str) -> None:
@@ -1622,9 +1626,9 @@ _MAP_OCEAN = "#D6E8F0"  # muted blue for ocean/water
 _MAP_COUNTRY = "#E8E4DF"  # light gray for neighboring countries
 _MAP_BORDER = "#BBBBBB"  # thin country borders
 _MAP_STATE = "#CCCCCC"  # state borders
-_MAP_AMAZON = "#E0ECD8"  # light green — Amazon biome base
+_MAP_AMAZON = "#E0ECD8"  # light green â€” Amazon biome base
 
-# Year → color for deforestation trend (older = lighter, recent = darker red)
+# Year â†’ color for deforestation trend (older = lighter, recent = darker red)
 _DEFOR_CMAP = "YlOrRd"
 
 
@@ -1714,7 +1718,7 @@ def _map_source(ax, text: str) -> None:
     )
 
 
-# ── MAP 1: Amazon deforestation polygons colored by year ─────────────────
+# â”€â”€ MAP 1: Amazon deforestation polygons colored by year â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
@@ -1808,7 +1812,7 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
                     fraction=0.04, pad=0.01, shrink=0.6
                 )
                 cbar.set_label(
-                    "Ano de detecção" if lang == "pt" else "Year detected",
+                    "Ano de detecÃ§Ã£o" if lang == "pt" else "Year detected",
                     fontsize=8,
                     color="#555555",
                 )
@@ -1825,7 +1829,7 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
         ax.text(
             0.5,
             0.6,
-            "🗺",
+            "ðŸ—º",
             ha="center",
             va="center",
             fontsize=48,
@@ -1833,10 +1837,10 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
             transform=ax.transAxes,
         )
         msg = (
-            "Mapa indisponível — execute o script 02\n"
+            "Mapa indisponÃ­vel â€” execute o script 02\n"
             "para gerar os dados GeoParquet"
             if lang == "pt"
-            else "Map unavailable — run script 02\n" "to generate GeoParquet data"
+            else "Map unavailable â€” run script 02\n" "to generate GeoParquet data"
         )
         ax.text(
             0.5,
@@ -1850,12 +1854,12 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
             style="italic",
         )
     else:
-        # Annotation: current year km²
+        # Annotation: current year kmÂ²
         current_km2 = _STATS.get("current_km2", 0)
         txt = (
-            f"{_num(current_km2,'pt')} km²\ndesmatados em {current_year}"
+            f"{_num(current_km2,'pt')} kmÂ²\ndesmatados em {current_year}"
             if lang == "pt"
-            else f"{_num(current_km2,'en')} km²\ndeforested in {current_year}"
+            else f"{_num(current_km2,'en')} kmÂ²\ndeforested in {current_year}"
         )
         ax.text(
             0.97,
@@ -1879,7 +1883,7 @@ def chart_map_amazon_deforestation(lang: str) -> io.BytesIO:
     return _buf(fig)
 
 
-# ── MAP 2: Brazil biomes colored by remaining forest cover ────────────────
+# â”€â”€ MAP 2: Brazil biomes colored by remaining forest cover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
@@ -1900,7 +1904,7 @@ def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
     import matplotlib.cm as cm_m
     import matplotlib.colors as mcolors_m
 
-    # Color scale: red (<40%) → orange (<65%) → green (>65%)
+    # Color scale: red (<40%) â†’ orange (<65%) â†’ green (>65%)
     _COV_CMAP = mcolors_m.LinearSegmentedColormap.from_list(
         "cover", ["#C0392B", "#E67E22", "#27AE60"], N=256
     )
@@ -2047,7 +2051,7 @@ def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
     return _buf(fig)
 
 
-# ── Map slide builders ────────────────────────────────────────────────────
+# â”€â”€ Map slide builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def s_map_amazon(prs: Presentation, lang: str) -> None:
@@ -2062,17 +2066,17 @@ def s_map_amazon(prs: Presentation, lang: str) -> None:
     _section(sl, COPY["sec_amazon"][lang], lang)
     _divider(sl, lang)
 
-    headline_pt = f"Onde estão as {_num(cur_km2,'pt')} km² desmatadas em {cur_yr}?"
-    headline_en = f"Where are the {_num(cur_km2,'en')} km² deforested in {cur_yr}?"
+    headline_pt = f"Onde estÃ£o as {_num(cur_km2,'pt')} kmÂ² desmatadas em {cur_yr}?"
+    headline_en = f"Where are the {_num(cur_km2,'en')} kmÂ² deforested in {cur_yr}?"
     _headline(sl, headline_pt if lang == "pt" else headline_en)
 
     sub_pt = (
-        "Polígonos de desmatamento na Amazônia Legal · 2015–"
-        f"{cur_yr} · cores por ano de detecção"
+        "PolÃ­gonos de desmatamento na AmazÃ´nia Legal Â· 2015â€“"
+        f"{cur_yr} Â· cores por ano de detecÃ§Ã£o"
     )
     sub_en = (
-        "Deforestation polygons in Brazil's Legal Amazon · 2015–"
-        f"{cur_yr} · colored by detection year"
+        "Deforestation polygons in Brazil's Legal Amazon Â· 2015â€“"
+        f"{cur_yr} Â· colored by detection year"
     )
     _sub(sl, sub_pt if lang == "pt" else sub_en)
 
@@ -2084,17 +2088,17 @@ def s_map_amazon(prs: Presentation, lang: str) -> None:
     _rect(sl, rx, 1.62, 3.35, 3.7, "#F8F5F0", "#E0E0E0")
 
     stats_items_pt = [
-        (f"{_num(cur_km2,'pt')} km²", f"desmatados em {cur_yr}"),
+        (f"{_num(cur_km2,'pt')} kmÂ²", f"desmatados em {cur_yr}"),
         (
-            f"−{pct:.0f}%",
+            f"âˆ’{pct:.0f}%",
             f"desde o pico de {_STATS.get('peak_year','')}",
         ),
-        (f"{_num(_STATS.get('target_2028',4000),'pt')} km²", "meta para 2028"),
+        (f"{_num(_STATS.get('target_2028',4000),'pt')} kmÂ²", "meta para 2028"),
     ]
     stats_items_en = [
-        (f"{_num(cur_km2,'en')} km²", f"deforested in {cur_yr}"),
-        (f"−{pct:.0f}%", f"since {_STATS.get('peak_year','')} peak"),
-        (f"{_num(_STATS.get('target_2028',4000),'en')} km²", "2028 target"),
+        (f"{_num(cur_km2,'en')} kmÂ²", f"deforested in {cur_yr}"),
+        (f"âˆ’{pct:.0f}%", f"since {_STATS.get('peak_year','')} peak"),
+        (f"{_num(_STATS.get('target_2028',4000),'en')} kmÂ²", "2028 target"),
     ]
     items = stats_items_pt if lang == "pt" else stats_items_en
 
@@ -2250,8 +2254,8 @@ def main() -> None:
     _STATS.update(stats)
 
     print("\n  Key statistics calculated from real data:")
-    print(f"    Peak:    {_STATS['peak_km2']:,.0f} km² ({_STATS['peak_year']})")
-    print(f"    Current: {_STATS['current_km2']:,.0f} km² ({_STATS['current_year']})")
+    print(f"    Peak:    {_STATS['peak_km2']:,.0f} kmÂ² ({_STATS['peak_year']})")
+    print(f"    Current: {_STATS['current_km2']:,.0f} kmÂ² ({_STATS['current_year']})")
     print(
         f"    Decline: {_STATS['pct_decline']:.1f}%  "
         f"over {_STATS['n_years_decline']} years"
@@ -2333,3 +2337,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -7,14 +7,14 @@ Thanks for helping improve this PRODES pipeline.
 1. Install Python 3.11 or newer.
 2. Run `python setup_env.py`.
 3. Activate the environment.
-4. Run `python 00_pipeline.py --steps 1` for a small smoke test.
+4. Run `python run_pipeline.py --steps 1` for a small smoke test.
 
 ## Development Notes
 
 - Keep generated data, presentations, images, and reports out of Git.
 - Use `PRODES_HOME` when testing outside the default `workspace/` folder.
 - Prefer small, focused commits.
-- Run `python -m py_compile *.py` before opening a pull request.
+- Run `python -m py_compile run_pipeline.py setup_env.py scripts/*.py prodes_pipeline/*.py` before opening a pull request.
 
 ## Data Provider
 

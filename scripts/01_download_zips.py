@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 __version__ = "1.0.0"
 
@@ -9,6 +9,10 @@ import time
 import zipfile as zf
 from datetime import datetime, timezone
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 from typing import Any, TypedDict
 from urllib.parse import urljoin, urlparse
 
@@ -21,10 +25,10 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
 
     Strategy order (most to least reliable for targeting sys.executable):
-      1. python -m pip          — always installs into the running interpreter
-      2. uv pip --python        — faster wheel resolution for native libs
-      3. python -m uv pip       — uv via module, same target guarantee
-      4. pip --break-system-pkg — last resort for externally-managed envs
+      1. python -m pip          â€” always installs into the running interpreter
+      2. uv pip --python        â€” faster wheel resolution for native libs
+      3. python -m uv pip       â€” uv via module, same target guarantee
+      4. pip --break-system-pkg â€” last resort for externally-managed envs
 
     After each attempt, importlib.invalidate_caches() re-scans site-packages
     so that newly installed packages are immediately discoverable.
@@ -90,7 +94,7 @@ from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 
-from data_quality import (
+from prodes_pipeline.data_quality import (
     LineageRecord,
     StageTimer,
     atomic_write_json,
@@ -100,8 +104,8 @@ from data_quality import (
     to_jsonable,
     write_run_report,
 )
-from pipeline_contracts import ZIP_ARCHIVE_CONTRACT, ZIP_INVENTORY_CONTRACT
-from prodes_config import REPORTS_DIR, ZIP_ROOT, ensure_pipeline_dirs
+from prodes_pipeline.pipeline_contracts import ZIP_ARCHIVE_CONTRACT, ZIP_INVENTORY_CONTRACT
+from prodes_pipeline.config import REPORTS_DIR, ZIP_ROOT, ensure_pipeline_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +123,7 @@ class ZipEntry(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# CONFIG  ← the only section that needs to be edited
+# CONFIG  â† the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, Any] = {
@@ -127,7 +131,7 @@ CONFIG: dict[str, Any] = {
     "root_folder": ZIP_ROOT,
     "http_timeout": 30,
     "download_timeout": 600,
-    "chunk_size": 32 * 1024 * 1024,  # 32 MB per stream chunk — maximize single-file throughput
+    "chunk_size": 32 * 1024 * 1024,  # 32 MB per stream chunk â€” maximize single-file throughput
     # Files to permanently skip (exact filename, case-sensitive).
     "skip_files": [
         "prodes_brasil_2023_arte.zip",
@@ -1266,3 +1270,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

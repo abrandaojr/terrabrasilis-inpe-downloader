@@ -7,7 +7,7 @@ produced upstream. They are intentionally lightweight and use only the local
 `data_quality` helpers so the pipeline remains dependency-compatible.
 """
 
-from data_quality import DataContract, FreshnessPolicy
+from prodes_pipeline.data_quality import DataContract, FreshnessPolicy
 
 
 ZIP_INVENTORY_CONTRACT = DataContract(

@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from prodes_config import ensure_pipeline_dirs
+from prodes_pipeline.config import ensure_pipeline_dirs
 
 ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
@@ -41,8 +41,10 @@ def main() -> None:
         print(r"Activate with: .venv\Scripts\activate")
     else:
         print("Activate with: source .venv/bin/activate")
-    print("Run with: python 00_pipeline.py")
+    print("Run with: python run_pipeline.py")
+    print("Or run a specific stage with: python scripts/01_download_zips.py")
 
 
 if __name__ == "__main__":
     main()
+

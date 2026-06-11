@@ -1,6 +1,22 @@
+﻿"""Run the complete TerraBrasilis/PRODES pipeline.
+
+Usage:
+    python run_pipeline.py
+    python run_pipeline.py -k
+    python run_pipeline.py --from 2
+    python run_pipeline.py --steps 1 3
+    python scripts/00_pipeline.py --steps 1
+
+Options:
+    -h, --help      Show this help message.
+    -k              Continue to the next step when one step fails.
+    --from N        Run step N and all following steps.
+    --steps N ...   Run only the selected step numbers.
+"""
+
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__: list[str] = []
 
 import subprocess
@@ -9,8 +25,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from data_quality import configure_json_logging, write_run_report
-from prodes_config import REPORTS_DIR, ensure_pipeline_dirs
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from prodes_pipeline.data_quality import configure_json_logging, write_run_report
+from prodes_pipeline.config import REPORTS_DIR, ensure_pipeline_dirs
 
 # ---------------------------------------------------------------------------
 # Pipeline definition
@@ -62,6 +82,9 @@ def _parse_args() -> tuple[set[int], bool]:
     """Parse command-line arguments. Returns (step numbers to run, keep_going flag)."""
     args = sys.argv[1:]
     all_step_numbers = {s[0] for s in STEPS}
+    if any(arg in {'-h', '--help'} for arg in args):
+        print(__doc__)
+        sys.exit(0)
     keep_going = "-k" in args
     args = [arg for arg in args if arg != "-k"]
 
@@ -165,11 +188,11 @@ def _run_step(
         else:
             print(
                 f"  Fix the issue and resume with:  "
-                f"python 00_pipeline.py --from {step_number}"
+                f"python run_pipeline.py --from {step_number}"
             )
             print(
                 f"  Or run all remaining steps:     "
-                f"python 00_pipeline.py --from {step_number} -k"
+                f"python run_pipeline.py --from {step_number} -k"
             )
         print(SEP)
         OBS_LOG.emit(
@@ -261,7 +284,7 @@ def main() -> None:
         failed_steps_str = " ".join(str(n) for n in sorted(failed_steps))
         print(f"  Failed steps : {failed_steps_str}")
         print(
-            f"  Retry with   : python 00_pipeline.py --steps "
+            f"  Retry with   : python run_pipeline.py --steps "
             f"{failed_steps_str}"
         )
     print(SEP + "\n")
@@ -308,3 +331,8 @@ if __name__ == "__main__":
         print("  Pipeline interrupted by user (Ctrl+C).")
         print(SEP + "\n")
         sys.exit(130)  # Standard exit code for KeyboardInterrupt
+
+
+
+
+

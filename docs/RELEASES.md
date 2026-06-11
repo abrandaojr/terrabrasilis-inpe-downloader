@@ -5,7 +5,7 @@ This repository uses Git tags for release points.
 ## Creating a Release
 
 1. Update `CHANGELOG.md`.
-2. Run `python -m py_compile *.py`.
+2. Run `python -m py_compile run_pipeline.py setup_env.py scripts/*.py prodes_pipeline/*.py`.
 3. Commit the changes.
 4. Create an annotated tag, for example:
 

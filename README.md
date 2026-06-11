@@ -39,20 +39,47 @@ source .venv/bin/activate
 Run the full pipeline:
 
 ```bash
-python 00_pipeline.py
+python run_pipeline.py
 ```
 
 Useful run modes:
 
 ```bash
-python 00_pipeline.py -k
-python 00_pipeline.py --from 2
-python 00_pipeline.py --steps 1 3
-python 00_pipeline.py --from 2 -k
+python run_pipeline.py -k
+python run_pipeline.py --from 2
+python run_pipeline.py --steps 1 3
+python run_pipeline.py --from 2 -k
 ```
 
-The individual scripts also auto-install missing Python packages into the active
-interpreter, but `setup_env.py` is the recommended reproducible setup path.
+The individual stage scripts can also be run directly, for example
+`python scripts/01_download_zips.py`. They auto-install missing Python packages
+into the active interpreter, but `setup_env.py` is the recommended reproducible
+setup path.
+
+## Repository Layout
+
+```text
+repository/
+  run_pipeline.py              # friendly entry point
+  setup_env.py                 # creates .venv and installs dependencies
+  scripts/                     # runnable pipeline stages
+    00_pipeline.py
+    01_download_zips.py
+    02_convert_to_geoparquet.py
+    03_deforestation_chart.py
+    04_generate_presentation.py
+    05_organize_geoparquet.py
+    06_export_tables.py
+    07_visual_story_deliverables.py
+  prodes_pipeline/             # shared package code
+    config.py
+    data_quality.py
+    pipeline_contracts.py
+  docs/
+    RELEASES.md
+    SECURITY.md
+  .github/                     # issue and pull request templates
+```
 
 ## Portable Workspace
 
@@ -60,9 +87,8 @@ Default layout:
 
 ```text
 repository/
-  00_pipeline.py
-  01_download_zips.py
-  ...
+  scripts/
+  prodes_pipeline/
   workspace/
     zip/
     geoparquet/
@@ -99,13 +125,13 @@ PRODES_EXTRACT_DIR
 
 ```text
 TerraBrasilis download page
-  -> 01_download_zips.py
-  -> 02_convert_to_geoparquet.py
-  -> 03_deforestation_chart.py
-  -> 04_generate_presentation.py
-  -> 05_organize_geoparquet.py
-  -> 06_export_tables.py
-  -> 07_visual_story_deliverables.py
+  -> scripts/01_download_zips.py
+  -> scripts/02_convert_to_geoparquet.py
+  -> scripts/03_deforestation_chart.py
+  -> scripts/04_generate_presentation.py
+  -> scripts/05_organize_geoparquet.py
+  -> scripts/06_export_tables.py
+  -> scripts/07_visual_story_deliverables.py
 ```
 
 ### 01 Download ZIPs
@@ -212,13 +238,13 @@ Each stage writes JSON quality reports to `workspace/reports/`, including:
 Run a syntax check before publishing changes:
 
 ```bash
-python -m py_compile *.py
+python -m py_compile run_pipeline.py setup_env.py scripts/*.py prodes_pipeline/*.py
 ```
 
 ## Releases and Packages
 
 - Release notes live in `CHANGELOG.md`.
-- Release process notes live in `RELEASES.md`.
+- Release process notes live in `docs/RELEASES.md`.
 - Package metadata lives in `pyproject.toml`.
 - Generated data products are intentionally not published as GitHub Packages.
 

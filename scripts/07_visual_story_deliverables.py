@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 Generate didactic visual communication deliverables for the PRODES story.
@@ -38,6 +38,10 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 from typing import Any
 
 
@@ -94,8 +98,8 @@ from pptx.dml.color import RGBColor  # noqa: E402
 from pptx.enum.text import PP_ALIGN  # noqa: E402
 from pptx.util import Inches, Pt  # noqa: E402
 
-from data_quality import validate_nonempty_files, write_run_report
-from prodes_config import (
+from prodes_pipeline.data_quality import validate_nonempty_files, write_run_report
+from prodes_pipeline.config import (
     FIGURES_DIR,
     PRESENTATIONS_DIR,
     REPORTS_DIR,
@@ -254,7 +258,7 @@ def render_annual_chart(rows: list[VisualRecord], output_path: Path) -> None:
     ax.tick_params(axis="x", length=0)
     ax.tick_params(axis="y", length=0, labelsize=9, colors=f"#{CONFIG['palette']['muted']}")
     ax.yaxis.grid(True, color=f"#{CONFIG['palette']['grid']}", linewidth=0.7, zorder=0)
-    ax.set_ylabel("Annual deforestation (km²)", fontsize=10, color=f"#{CONFIG['palette']['muted']}")
+    ax.set_ylabel("Annual deforestation (kmÂ²)", fontsize=10, color=f"#{CONFIG['palette']['muted']}")
 
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -338,7 +342,7 @@ def build_presentation(rows: list[VisualRecord], chart_path: Path, checklist: li
     slide = prs.slides.add_slide(blank)
     add_textbox(slide, 0.75, 1.55, 10.9, 0.6, "PRODES visual story", 32, CONFIG["palette"]["ink"], True)
     add_textbox(slide, 0.75, 2.3, 9.8, 0.45, "A didactic, reproducible view of annual Amazon deforestation and project targets", 19, CONFIG["palette"]["muted"])
-    add_textbox(slide, 0.75, 3.2, 7.5, 0.35, f"{CONFIG['author']} · {datetime.now().strftime('%B %d, %Y')}", 14, CONFIG["palette"]["muted"])
+    add_textbox(slide, 0.75, 3.2, 7.5, 0.35, f"{CONFIG['author']} Â· {datetime.now().strftime('%B %d, %Y')}", 14, CONFIG["palette"]["muted"])
     add_footer(slide, 1)
     add_talking_points(slide, "Main message: this presentation demonstrates a governed visual communication pattern. Method: one shared dataset feeds both PowerPoint and Excel.")
 
@@ -534,3 +538,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

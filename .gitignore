@@ -21,6 +21,10 @@ ENV/
 *.tif
 *.tiff
 *.zip
+*.pptx
+*.xlsx
+*.xls
+*.csv
 
 # Reports generated at runtime
 validation_report.json
@@ -28,16 +32,26 @@ report_*.json
 relatorio_*.json
 terrabrasilis_zips.csv
 terrabrasilis_zips.json
+tables/
+charts/
+_organized/
+reports/
 
 # Chart output
 *.png
 *.jpg
+*.jpeg
+*.webp
 
 # IDE / OS
 .vscode/
 .idea/
+.claude/
+.claude/settings.local.json
 *.DS_Store
 Thumbs.db
 
 # Temp files
 *.tmp
+*.bak
+*.log

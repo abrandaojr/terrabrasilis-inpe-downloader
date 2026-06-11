@@ -121,6 +121,16 @@ _bootstrap(
 import matplotlib.pyplot as plt
 import numpy as np
 
+from data_quality import (
+    LineageRecord,
+    StageTimer,
+    configure_json_logging,
+    numeric_distribution,
+    to_jsonable,
+    validate_nonempty_files,
+    write_run_report,
+)
+
 
 # ---------------------------------------------------------------------------
 # CONFIG  ← the only section that needs to be edited
@@ -132,6 +142,8 @@ CONFIG: dict[str, object] = {
 }
 
 SEP = "=" * 65
+REPORT_DIR = HERE / "reports"
+OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 # DIV is defined but not used. Removed for PEP 8.
 
 # ---------------------------------------------------------------------------
@@ -151,6 +163,25 @@ LGRAY = "#CCCCCC"
 DGRAY = "#444444"
 
 
+def _validate_inputs() -> dict[str, object]:
+    years = sorted(ANNUAL_KM2)
+    target_years = sorted(TARGETS)
+    if len(years) != len(ANNUAL_KM2):
+        raise SystemExit("[FATAL] Duplicate annual deforestation years detected.")
+    if any(v <= 0 for v in ANNUAL_KM2.values()):
+        raise SystemExit("[FATAL] Annual deforestation values must be positive.")
+    if any(v <= 0 for v in TARGETS.values()):
+        raise SystemExit("[FATAL] Target values must be positive.")
+    if target_years and years and min(target_years) <= max(years):
+        raise SystemExit("[FATAL] Target years must be after observed years.")
+    return {
+        "observed_year_min": min(years),
+        "observed_year_max": max(years),
+        "observed_count": len(years),
+        "target_years": target_years,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -163,6 +194,11 @@ def main() -> None:
     print(f"  Deforestation Chart  v{__version__}  |  {now}")
     print(f"{SEP}\n")
 
+    input_quality = _validate_inputs()
+    input_quality["annual_distribution"] = numeric_distribution(
+        list(ANNUAL_KM2.values())
+    )
+    stage_timer = StageTimer("03_generate_deforestation_chart")
     years = sorted(ANNUAL_KM2) + sorted(TARGETS)
     values = ([ANNUAL_KM2[y] for y in sorted(ANNUAL_KM2)] +
               [TARGETS[y] for y in sorted(TARGETS)])
@@ -244,8 +280,33 @@ def main() -> None:
 
     output = str(CONFIG["output_path"])
     plt.savefig(output, dpi=CONFIG["dpi"], bbox_inches="tight", facecolor="white")
+    artifacts = validate_nonempty_files([Path(output)], "chart")
+    metrics = stage_timer.finish(
+        "ok",
+        input_row_count=len(ANNUAL_KM2),
+        output_row_count=len(artifacts),
+    )
+    OBS_LOG.emit("stage_metrics", **to_jsonable(metrics))
+    report_path = write_run_report(
+        REPORT_DIR,
+        Path(__file__).name,
+        {
+            "status": "ok",
+            "version": __version__,
+            "input_quality": input_quality,
+            "artifacts": artifacts,
+            "lineage": LineageRecord(
+                stage_name="03_deforestation_chart",
+                upstream_sources=["ANNUAL_KM2 constant", "TARGETS constant"],
+                transformation="Render publication PNG from observed annual PRODES values and project targets.",
+                downstream_outputs=[output],
+                contracts=[],
+            ),
+        },
+    )
 
     print(f"  saved: {output}")
+    print(f"  Quality report: {report_path}")
     print(f"{SEP}\n")
 
 

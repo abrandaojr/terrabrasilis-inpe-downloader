@@ -144,8 +144,25 @@ from pptx import Presentation          # noqa: E402
 from pptx.dml.color import RGBColor    # noqa: E402
 from pptx.util import Inches, Pt       # noqa: E402
 
+from data_quality import (
+    LineageRecord,
+    StageTimer,
+    configure_json_logging,
+    file_inventory,
+    freshness_metrics,
+    parquet_quality_profile,
+    require_existing_dir,
+    to_jsonable,
+    validate_nonempty_files,
+    write_run_report,
+)
+from pipeline_contracts import ANALYTICS_EXPORT_CONTRACT, GEOPARQUET_CONTRACT
+
 SEP = "=" * 70
 DIV = "-" * 70
+REPORT_DIR = HERE / "reports"
+OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
+_DUCKDB = duckdb.connect(":memory:")
 
 # ============================================================================
 # CONFIG
@@ -301,6 +318,9 @@ def _font(bold=False, size=10, color=_C_DARK, italic=False) -> Font:
 
 def _align(h="left", v="center", wrap=False) -> Alignment:
     return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
+
+def _mpl_color(c: str) -> str:
+    return c if c.startswith("#") else f"#{c}"
 
 def _hdr(ws, row: int, cols: list[str], col0: int = 1, color: str = _C_NAVY) -> None:
     for j, v in enumerate(cols, col0):
@@ -522,11 +542,16 @@ def _sql_paths(files: list[Path]) -> str:
 def _run(sql: str, label: str = "") -> list:
     """Execute a DuckDB query with comprehensive error handling."""
     try:
-        return duckdb.connect().execute(sql).fetchall()
+        return _DUCKDB.execute(sql).fetchall()
     except Exception as exc:
         if label:
             print(f"  [WARN] {label}: {exc}")
         return []
+
+
+def _tuple_sort_key(row: tuple) -> tuple:
+    """Sort rows with mixed None/string dimension values without changing data."""
+    return tuple((v is None, "" if v is None else v) for v in row)
 
 
 # ── P1  Annual Suppression Series ──────────────────────────────────────────
@@ -595,7 +620,7 @@ def p2_cumulative(p1_rows: list[tuple]) -> list[tuple]:
             cum += km2
             result.append((*((year,) + group_key), round(km2, 2), round(cum, 2)))
 
-    return sorted(result)
+    return sorted(result, key=_tuple_sort_key)
 
 
 # ── P3  Natural Vegetation Parameter A (stock estimate) ────────────────────
@@ -624,7 +649,7 @@ def p3_nv_remaining(p2_rows: list[tuple]) -> list[tuple]:
         pct       = round(remaining / a_hat * 100, 2) if a_hat else 0.0
         result.append((*r[:-2], round(remaining, 2), pct))
 
-    return sorted(result)
+    return sorted(result, key=_tuple_sort_key)
 
 
 # ── P4  Natural Vegetation Parameter B (class partition) ───────────────────
@@ -729,7 +754,7 @@ def p6_sv_increment(p5_rows: list[tuple]) -> list[tuple]:
             increment = round(extent - prev, 2) if i > 0 else 0.0
             result.append((*((year,) + key), round(extent, 2), increment))
 
-    return sorted(result)
+    return sorted(result, key=_tuple_sort_key)
 
 
 # ── P7  SV Parameter A — Age-Class Partition ───────────────────────────────
@@ -1232,7 +1257,7 @@ def chart_sv_increment(p6_national: list[tuple], lang: str) -> Path:
     if not years:
         return None
 
-    colors = [_C_GRN if v >= 0 else _C_RED for v in inc]
+    colors = [_mpl_color(_C_GRN if v >= 0 else _C_RED) for v in inc]
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(years, inc, color=colors, width=0.75, zorder=3, linewidth=0)
     ax.axhline(0, color="#888888", lw=0.8, zorder=2)
@@ -1281,7 +1306,7 @@ def chart_state_ranking(p1_rows: list[tuple], lang: str, top_n: int = 15) -> Pat
 
     for i, v in enumerate(km2):
         ax.text(v + max(km2) * 0.01, i, f"{v:,.0f}",
-                va="center", fontsize=8, color=_C_MED)
+                va="center", fontsize=8, color=_mpl_color(_C_MED))
 
     ax.text(0.01, -0.08, _t("src_prodes", lang),
             transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
@@ -1515,14 +1540,14 @@ def main() -> None:
     print(f"{SEP}\n")
 
     gpq_dir = Path(str(CONFIG["geoparquet_dir"]))
-    if not gpq_dir.exists():
-        sys.exit(f"[FATAL] GeoParquet directory not found: {gpq_dir}")
+    require_existing_dir(gpq_dir, "GeoParquet")
 
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     CHART_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Discover files ─────────────────────────────────────────────────
     print("  [1/5] Discovering data files...")
+    discover_timer = StageTimer("06_discover_inputs")
     supp_by_biome = _discover_suppression(gpq_dir)
     vs_files      = _discover_vs(gpq_dir)
 
@@ -1532,6 +1557,34 @@ def main() -> None:
 
     print(f"     Suppression files  : {len(all_supp)} ({len(supp_by_biome)} biomes)")
     print(f"     Secondary veg files: {len(vs_files)}")
+    all_input_files = sorted(set(all_supp + vs_files))
+    input_quality = {
+        "contract": to_jsonable(GEOPARQUET_CONTRACT),
+        "inventory": file_inventory(all_input_files),
+        "freshness": freshness_metrics(all_input_files, GEOPARQUET_CONTRACT.freshness),
+        "parquet_profile": parquet_quality_profile(
+            all_input_files,
+            GEOPARQUET_CONTRACT,
+        ),
+    }
+    OBS_LOG.emit(
+        "stage_metrics",
+        **to_jsonable(
+            discover_timer.finish(
+                "ok",
+                output_row_count=len(all_input_files),
+                anomalies={
+                    "schema": input_quality["parquet_profile"].get(
+                        "schema_anomalies", []
+                    ),
+                    "distribution": input_quality["parquet_profile"].get(
+                        "distribution_anomalies", []
+                    ),
+                    "freshness": input_quality["freshness"].get("stale", []),
+                },
+            )
+        ),
+    )
 
     if not all_supp:
         sys.exit("[FATAL] No suppression parquet files found. Run scripts 02 and 05 first.")
@@ -1552,7 +1605,8 @@ def main() -> None:
               f"class: {sm_vs.cls}  age: {sm_vs.age}")
 
     # ── 3. Compute parameters ─────────────────────────────────────────────
-    print("\n  [3/5] Computing parameters P1–P9 via DuckDB...")
+    print("\n  [3/5] Computing parameters P1-P9 via DuckDB...")
+    compute_timer = StageTimer("06_compute_parameters_p1_p9")
 
     p1 = p1_suppression_series(all_supp, sm_supp)
     print(f"     P1 rows: {len(p1)}")
@@ -1581,6 +1635,28 @@ def main() -> None:
 
     p9 = p9_muni_state_matrix(amazon_files or all_supp, sm_supp, "suppression")
     print(f"     P9 rows: {len(p9)}")
+    row_counts = {
+        "p1": len(p1),
+        "p2": len(p2),
+        "p3": len(p3),
+        "p4": len(p4),
+        "p5": len(p5),
+        "p6": len(p6),
+        "p7_pt": len(p7_pt),
+        "p7_en": len(p7_en),
+        "p8": len(p8),
+        "p9": len(p9),
+    }
+    OBS_LOG.emit(
+        "stage_metrics",
+        **to_jsonable(
+            compute_timer.finish(
+                "ok",
+                input_row_count=input_quality["parquet_profile"].get("row_count"),
+                output_row_count=sum(row_counts.values()),
+            )
+        ),
+    )
 
     # ── 4. Generate charts ────────────────────────────────────────────────
     print("\n  [4/5] Generating publication-quality charts...")
@@ -1622,6 +1698,7 @@ def main() -> None:
     # ── 5. Export workbooks + PPTX ────────────────────────────────────────
     print("\n  [5/5] Writing Excel workbooks and PowerPoint presentations...")
     date_str = datetime.now().strftime("%Y-%m-%d")
+    output_artifacts: list[Path] = []
 
     for lang in ("pt", "en"):
         p7_lang = p7_pt if lang == "pt" else p7_en
@@ -1642,17 +1719,48 @@ def main() -> None:
         ll  = "PT" if lang == "pt" else "EN"
         out = TABLES_DIR / f"PRODES_Analytics_{ll}_{date_str}.xlsx"
         wb.save(str(out))
+        output_artifacts.append(out)
         print(f"     [{ll}] Excel saved: {out}")
 
         data = {"p9": p9}
         prs  = build_pptx(lang, chart_paths, data)
         ppt_out = TABLES_DIR / f"PRODES_Analytics_{ll}_{date_str}.pptx"
         prs.save(str(ppt_out))
+        output_artifacts.append(ppt_out)
         print(f"     [{ll}] PPTX  saved: {ppt_out}")
+
+    artifacts = validate_nonempty_files(output_artifacts, "analytics export")
+    report_path = write_run_report(
+        REPORT_DIR,
+        Path(__file__).name,
+        {
+            "status": "ok",
+            "version": __version__,
+            "geoparquet_dir": str(gpq_dir),
+            "tables_dir": str(TABLES_DIR),
+            "input_quality": input_quality,
+            "input_counts": {
+                "suppression_files": len(all_supp),
+                "suppression_biomes": len(supp_by_biome),
+                "secondary_vegetation_files": len(vs_files),
+            },
+            "row_counts": row_counts,
+            "output_contract": to_jsonable(ANALYTICS_EXPORT_CONTRACT),
+            "artifacts": artifacts,
+            "lineage": LineageRecord(
+                stage_name="06_export_tables",
+                upstream_sources=[str(gpq_dir)],
+                transformation="Compute P1-P9 analytic tables from GeoParquet with DuckDB and export bilingual Excel/PPTX artifacts.",
+                downstream_outputs=[str(p) for p in output_artifacts],
+                contracts=[GEOPARQUET_CONTRACT.name, ANALYTICS_EXPORT_CONTRACT.name],
+            ),
+        },
+    )
 
     print(f"\n{DIV}")
     print(f"  Output folder : {TABLES_DIR}")
     print(f"  Charts folder : {CHART_DIR}")
+    print(f"  Quality report: {report_path}")
     print(f"{SEP}\n")
 
 

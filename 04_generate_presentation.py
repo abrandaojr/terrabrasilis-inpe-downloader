@@ -86,8 +86,22 @@ import pandas as pd  # noqa: E402
 import geopandas as gpd  # noqa: E402
 from pptx import Presentation  # noqa: E402
 from pptx.dml.color import RGBColor  # noqa: E402
-from pptx.enum.text import MsoParagraphAlignment  # noqa: E402
+from pptx.enum.text import PP_ALIGN as MsoParagraphAlignment  # noqa: E402
 from pptx.util import Pt  # noqa: E402
+
+from data_quality import (
+    LineageRecord,
+    StageTimer,
+    configure_json_logging,
+    file_inventory,
+    freshness_metrics,
+    parquet_quality_profile,
+    require_existing_dir,
+    to_jsonable,
+    validate_nonempty_files,
+    write_run_report,
+)
+from pipeline_contracts import GEOPARQUET_CONTRACT
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +122,9 @@ CONFIG: dict[str, object] = {
 
 SEP = "=" * 65
 DIV = "-" * 65
+REPORT_DIR = HERE / "reports"
+OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
+_DUCKDB_CONN = None
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +191,17 @@ _BIOME_TO_EN: dict[str, str] = {
     "Mata Atlantica": "Atlantic Forest",
     "Pampa": "Pampa",
 }
-_AMAZON_DIRS = {"Amazon Biome", "Legal Amazon"}
+_BIOME_TO_PT.update({
+    "Amazon_Biome": _BIOME_TO_PT["Amazon Biome"],
+    "Legal_Amazon": _BIOME_TO_PT["Legal Amazon"],
+    "Mata_Atlantica": _BIOME_TO_PT["Mata Atlantica"],
+})
+_BIOME_TO_EN.update({
+    "Amazon_Biome": _BIOME_TO_EN["Amazon Biome"],
+    "Legal_Amazon": _BIOME_TO_EN["Legal Amazon"],
+    "Mata_Atlantica": _BIOME_TO_EN["Mata Atlantica"],
+})
+_AMAZON_DIRS = {"Amazon Biome", "Amazon_Biome", "Legal Amazon", "Legal_Amazon"}
 # Keywords in the ZIP stem or layer name that identify deforestation layers
 _DEFOR_KEYWORDS = ("deforestation", "desmatamento", "desmat")
 # Keywords that identify auxiliary layers to skip (not deforestation measurements)
@@ -215,10 +242,30 @@ _BIOME_LABEL_TO_FILE_KEYWORD: dict[str, str] = {
     "Atlantic Forest": "mata_atlantica",
 }
 
+_BIOME_KEYWORD_TO_ORG_DIR: dict[str, str] = {
+    "amazon_biome_border": "Amazon_Biome",
+    "caatinga": "Caatinga",
+    "cerrado": "Cerrado",
+    "mata_atlantica": "Mata_Atlantica",
+    "pampa": "Pampa",
+    "pantanal": "Pantanal",
+}
+_BORDER_FILE_CACHE: dict[tuple[str, str], Path | None] = {}
+
 
 # ---------------------------------------------------------------------------
 # DATA LOADING LAYER
 # ---------------------------------------------------------------------------
+
+
+def _duckdb():
+    """Return a process-local DuckDB connection reused across stats queries."""
+    global _DUCKDB_CONN
+    if _DUCKDB_CONN is None:
+        import duckdb
+
+        _DUCKDB_CONN = duckdb.connect(":memory:")
+    return _DUCKDB_CONN
 
 
 def _auto_geoparquet_dir() -> Path | None:
@@ -287,8 +334,6 @@ def _query_series(
     files: list[Path], area_col: str, year_col: str, factor: float
 ) -> dict[int, float]:
     """DuckDB: aggregate area by year, return {year: km²}."""
-    import duckdb
-
     paths = [str(f).replace("\\", "/") for f in files]
     sql = f"""
         SELECT CAST("{year_col}" AS INTEGER)     AS yr,
@@ -302,7 +347,7 @@ def _query_series(
         ORDER  BY yr
     """
     try:
-        rows = duckdb.connect().execute(sql).fetchall()
+        rows = _duckdb().execute(sql).fetchall()
         return {int(r[0]): round(float(r[1]), 1) for r in rows if r[0] and r[1]}
     except Exception:
         return {}
@@ -316,8 +361,6 @@ def _query_total(
     factor: float,
 ) -> float | None:
     """DuckDB: sum area for a given year (or all years if year_col missing)."""
-    import duckdb
-
     paths = [str(f).replace("\\", "/") for f in files]
     where = (
         f'WHERE CAST("{year_col}" AS INTEGER) = {target_year}'
@@ -331,7 +374,7 @@ def _query_total(
         HAVING SUM(CAST("{area_col}" AS DOUBLE)) > 0
     """
     try:
-        row = duckdb.connect().execute(sql).fetchone()
+        row = _duckdb().execute(sql).fetchone()
         return round(float(row[0]), 1) if row and row[0] else None
     except Exception:
         return None
@@ -454,10 +497,8 @@ def _load_prodes_stats(geoparquet_dir: Path) -> dict:
         use_year = ref_year
         if year_col:
             try:
-                import duckdb
-
                 paths = [str(f).replace("\\", "/") for f in files]
-                row = duckdb.connect().execute(
+                row = _duckdb().execute(
                     f'SELECT MAX(CAST("{year_col}" AS INTEGER)) '
                     f"FROM read_parquet({paths!r})"
                 ).fetchone()
@@ -1583,12 +1624,36 @@ _DEFOR_CMAP = "YlOrRd"
 
 def _find_border_file(gpq_dir: Path, keyword: str) -> Path | None:
     """Search _organized or raw geoparquet for a border/boundary parquet."""
-    # Ensure keyword is for file name, not path component
+    cache_key = (str(gpq_dir.resolve()), keyword)
+    if cache_key in _BORDER_FILE_CACHE:
+        return _BORDER_FILE_CACHE[cache_key]
+
+    org_dir_name = _BIOME_KEYWORD_TO_ORG_DIR.get(keyword)
+    if org_dir_name:
+        aux_dir = gpq_dir / "_organized" / org_dir_name / "auxiliary"
+        candidates = (
+            [aux_dir / "amazon_biome_border.parquet"]
+            if keyword == "amazon_biome_border"
+            else [aux_dir / "biome_border.parquet"]
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                _BORDER_FILE_CACHE[cache_key] = candidate
+                return candidate
+
     search_keyword = keyword.lower().replace("_", "")
-    for pf in sorted(gpq_dir.rglob("*.parquet")):
-        # Match against stem (filename without extension)
-        if search_keyword in pf.stem.lower().replace("_", ""):
-            return pf
+    for base in (gpq_dir / "_organized", gpq_dir):
+        if not base.exists():
+            continue
+        for pf in sorted(base.rglob("*.parquet")):
+            stem = pf.stem.lower().replace("_", "")
+            parent = pf.parent.name.lower()
+            if parent != "auxiliary":
+                continue
+            if search_keyword in stem and "border" in stem:
+                _BORDER_FILE_CACHE[cache_key] = pf
+                return pf
+    _BORDER_FILE_CACHE[cache_key] = None
     return None
 
 
@@ -1851,10 +1916,14 @@ def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
 
         if border_file:
             try:
-                gdf = gpd.read_parquet(str(border_file))
+                gdf = gpd.read_parquet(str(border_file), columns=["geometry"])
                 if not gdf.empty:
                     if gdf.crs and gdf.crs.to_epsg() != 4326:
                         gdf = gdf.to_crs("EPSG:4326")
+                    gdf = gdf.copy()
+                    gdf["geometry"] = gdf.geometry.simplify(
+                        0.03, preserve_topology=True
+                    )
                     gdf.plot(
                         ax=ax,
                         color=color,
@@ -1867,8 +1936,13 @@ def chart_map_biomes_coverage(lang: str) -> io.BytesIO:
 
                     # Centroid label
                     try:
-                        cx = gdf.geometry.unary_union.centroid.x
-                        cy = gdf.geometry.unary_union.centroid.y
+                        geometry_union = (
+                            gdf.geometry.union_all()
+                            if hasattr(gdf.geometry, "union_all")
+                            else gdf.geometry.unary_union
+                        )
+                        cx = geometry_union.centroid.x
+                        cy = geometry_union.centroid.y
                         short = biome_label.split()[0]  # first word
                         ax.text(
                             cx,
@@ -2118,18 +2192,52 @@ def main() -> None:
         if CONFIG.get("geoparquet_dir")
         else _auto_geoparquet_dir()
     )
-    if gpq_dir is None or not gpq_dir.exists():
+    if gpq_dir is None:
         sys.exit(
             "[FATAL] GeoParquet directory not found.\n"
             "Run  python 02_convert_to_geoparquet.py  first, then retry."
         )
+    require_existing_dir(gpq_dir, "GeoParquet")
 
     print(f"  GeoParquet dir: {gpq_dir}\n")
+    input_files = list(gpq_dir.rglob("*.parquet"))
+    input_quality = {
+        "contract": to_jsonable(GEOPARQUET_CONTRACT),
+        "inventory": file_inventory(input_files),
+        "freshness": freshness_metrics(input_files, GEOPARQUET_CONTRACT.freshness),
+        "parquet_profile": parquet_quality_profile(input_files, GEOPARQUET_CONTRACT),
+    }
+    OBS_LOG.emit(
+        "data_contract",
+        stage_name="04_geoparquet_input_contract",
+        contract=to_jsonable(GEOPARQUET_CONTRACT),
+        metrics=input_quality,
+    )
 
     # 2. Load & compute real stats
     print("  Loading statistics from GeoParquet files...")
+    stats_timer = StageTimer("04_load_compute_stats")
     raw = _load_prodes_stats(gpq_dir)
     stats = _compute_derived_stats(raw)
+    OBS_LOG.emit(
+        "stage_metrics",
+        **to_jsonable(
+            stats_timer.finish(
+                "ok",
+                input_row_count=input_quality["parquet_profile"].get("row_count"),
+                output_row_count=len(stats),
+                anomalies={
+                    "schema": input_quality["parquet_profile"].get(
+                        "schema_anomalies", []
+                    ),
+                    "distribution": input_quality["parquet_profile"].get(
+                        "distribution_anomalies", []
+                    ),
+                    "freshness": input_quality["freshness"].get("stale", []),
+                },
+            )
+        ),
+    )
 
     # Make _STATS globally available for chart functions and slide builders
     _STATS.update(stats)
@@ -2148,6 +2256,7 @@ def main() -> None:
     # 3. Build presentation
     print("\n  Building slides...")
     prs = Presentation()
+    build_timer = StageTimer("04_build_presentation")
     prs.slide_width = _in(_SW)
     prs.slide_height = _in(_SH)
 
@@ -2163,15 +2272,47 @@ def main() -> None:
             print(f"    [{n:2d}/{total}]  {name}", end=" ", flush=True)
             try:
                 fn(prs, lang)
-                print("✓")
+                print("OK")
             except Exception as exc:
-                print(f"⚠  {exc} — blank slide inserted")
+                print(f"WARN  {exc} - blank slide inserted")
                 _blank(prs)
 
     # 4. Save
     out = Path(str(CONFIG["output_path"]))
     out.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out))
+    artifacts = validate_nonempty_files([out], "presentation")
+    OBS_LOG.emit(
+        "stage_metrics",
+        **to_jsonable(
+            build_timer.finish(
+                "ok",
+                input_row_count=len(_STATS),
+                output_row_count=len(prs.slides),
+            )
+        ),
+    )
+    report_path = write_run_report(
+        REPORT_DIR,
+        Path(__file__).name,
+        {
+            "status": "ok",
+            "version": __version__,
+            "geoparquet_dir": str(gpq_dir),
+            "input_quality": input_quality,
+            "stats_keys": sorted(_STATS),
+            "slide_count": len(prs.slides),
+            "expected_slide_count": len(_BUILDERS) * 2,
+            "artifacts": artifacts,
+            "lineage": LineageRecord(
+                stage_name="04_generate_presentation",
+                upstream_sources=[str(gpq_dir)],
+                transformation="Compute PRODES summary statistics from GeoParquet files and render bilingual PowerPoint slides.",
+                downstream_outputs=[str(out)],
+                contracts=[GEOPARQUET_CONTRACT.name],
+            ),
+        },
+    )
 
     print(f"\n{DIV}")
     print(f"  Saved  : {out.resolve()}")
@@ -2179,6 +2320,7 @@ def main() -> None:
         f"  Slides : {len(prs.slides)}  "
         f"({len(_BUILDERS)} PT-BR + {len(_BUILDERS)} EN-US)"
     )
+    print(f"  Quality report: {report_path}")
     print(f"{SEP}\n")
 
 

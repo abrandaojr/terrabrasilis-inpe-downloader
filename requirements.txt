@@ -27,6 +27,7 @@ matplotlib>=3.9
 # --- script 04 ---
 python-pptx>=1.0
 pandas>=2.0
+duckdb>=1.1
 
 # --- script 06 ---
 openpyxl>=3.1

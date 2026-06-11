@@ -9,6 +9,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from data_quality import configure_json_logging, write_run_report
+
 # ---------------------------------------------------------------------------
 # Pipeline definition
 # ---------------------------------------------------------------------------
@@ -18,7 +20,7 @@ STEPS: list[tuple[int, str, str]] = [
     (
         2,
         "02_convert_to_geoparquet.py",
-        "Convert vectors → GeoParquet | rasters → COG",
+        "Convert vectors -> GeoParquet | rasters -> COG",
     ),
     (3, "03_deforestation_chart.py", "Generate deforestation rate chart"),
     (
@@ -29,15 +31,17 @@ STEPS: list[tuple[int, str, str]] = [
     (
         5,
         "05_organize_geoparquet.py",
-        "Organize GeoParquet folder → catalog + _organized/",
+        "Organize GeoParquet folder -> catalog + _organized/",
     ),
-    (6, "06_export_tables.py", "Export all tables to Excel → tables/"),
+    (6, "06_export_tables.py", "Export all tables to Excel -> tables/"),
 ]
 
 # Constants for formatting output and paths
 SEP = "=" * 65
 DIV = "-" * 65
 HERE = Path(__file__).parent
+REPORT_DIR = HERE / "reports"
+OBS_LOG = configure_json_logging(REPORT_DIR / "observability.jsonl")
 
 
 # ---------------------------------------------------------------------------
@@ -121,18 +125,18 @@ def _run_step(
     current_run_idx: int,
     total_steps_to_run: int,
     keep_going: bool,
-) -> tuple[float, bool]:
+) -> tuple[float, bool, int]:
     """
     Run one pipeline step.
 
     Returns:
-        (elapsed_seconds, success_status)
+        (elapsed_seconds, success_status, return_code)
     """
     print(f"\n{SEP}")
     print(
         f"  STEP {step_number}/{len(STEPS)}  "
         f"[{current_run_idx}/{total_steps_to_run} selected]  "
-        f"—  {step_label}"
+        f"-  {step_label}"
     )
     print(f"{SEP}\n")
 
@@ -167,12 +171,26 @@ def _run_step(
                 f"python 00_pipeline.py --from {step_number} -k"
             )
         print(SEP)
-        if not keep_going:
-            sys.exit(result.returncode)
-        return step_elapsed_time, False
+        OBS_LOG.emit(
+            "pipeline_step",
+            stage_name=f"00_step_{step_number}",
+            script=script_name,
+            status="failed",
+            duration_seconds=round(step_elapsed_time, 1),
+            return_code=result.returncode,
+        )
+        return step_elapsed_time, False, result.returncode
 
     print(f"\n  Step {step_number} done  ({step_elapsed_time:.1f}s)")
-    return step_elapsed_time, True
+    OBS_LOG.emit(
+        "pipeline_step",
+        stage_name=f"00_step_{step_number}",
+        script=script_name,
+        status="ok",
+        duration_seconds=round(step_elapsed_time, 1),
+        return_code=result.returncode,
+    )
+    return step_elapsed_time, True, result.returncode
 
 
 # ---------------------------------------------------------------------------
@@ -207,25 +225,27 @@ def main() -> None:
         print(f"  Skipping: {skipped_info}")
     print(SEP)
 
-    results: dict[int, tuple[float, bool]] = {}  # step_number → (elapsed, success)
+    results: dict[int, tuple[float, bool, int]] = {}
     for idx, (step_num, script, label) in enumerate(steps_to_run, 1):
         results[step_num] = _run_step(
             step_num, script, label, idx, total_steps_to_run, keep_going
         )
+        if not results[step_num][1] and not keep_going:
+            break
 
     total_pipeline_elapsed = time.perf_counter() - pipeline_start_time
-    any_failed = any(not ok for _, ok in results.values())
+    any_failed = any(not ok for _, ok, _ in results.values())
 
     print(f"\n{SEP}")
     print(f"  {'PIPELINE COMPLETE' if not any_failed else 'PIPELINE DONE WITH ERRORS'}")
     print(DIV)
     for step_num, _, label in STEPS:
         if step_num in results:
-            elapsed, ok = results[step_num]
+            elapsed, ok, _return_code = results[step_num]
             status = (
                 f"{elapsed:>6.1f}s"
                 if ok
-                else f"{elapsed:>6.1f}s  ← FAILED"
+                else f"{elapsed:>6.1f}s  <- FAILED"
             )
             print(f"  [{step_num}] {label:<50}  {status}")
         else:
@@ -234,7 +254,7 @@ def main() -> None:
     print(f"  Total elapsed: {total_pipeline_elapsed:.1f}s")
     if any_failed:
         failed_steps = [
-            n for n, (_, ok) in results.items() if not ok
+            n for n, (_, ok, _) in results.items() if not ok
         ]
         failed_steps_str = " ".join(str(n) for n in sorted(failed_steps))
         print(f"  Failed steps : {failed_steps_str}")
@@ -243,6 +263,36 @@ def main() -> None:
             f"{failed_steps_str}"
         )
     print(SEP + "\n")
+
+    report_path = write_run_report(
+        REPORT_DIR,
+        Path(__file__).name,
+        {
+            "version": __version__,
+            "status": "failed" if any_failed else "ok",
+            "selected_steps": sorted(selected_step_numbers),
+            "keep_going": keep_going,
+            "elapsed_s": round(total_pipeline_elapsed, 1),
+            "steps": [
+                {
+                    "step": step_num,
+                    "script": script,
+                    "label": label,
+                    "status": (
+                        "ok" if step_num in results and results[step_num][1]
+                        else "failed" if step_num in results
+                        else "skipped"
+                    ),
+                    "return_code": results[step_num][2] if step_num in results else None,
+                    "elapsed_s": (
+                        round(results[step_num][0], 1) if step_num in results else None
+                    ),
+                }
+                for step_num, script, label in STEPS
+            ],
+        },
+    )
+    print(f"  Quality report: {report_path}")
 
     if any_failed:
         sys.exit(1)

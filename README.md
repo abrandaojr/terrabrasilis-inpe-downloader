@@ -20,6 +20,18 @@ or folder.
 
 ## Quick Start
 
+### One-command Windows PowerShell setup and run
+
+Open PowerShell and paste this command. It installs Git/Python with `winget` if
+needed, clones or updates the repository, prepares the Python environment, and
+runs the pipeline from step 1:
+
+```powershell
+$ErrorActionPreference="Stop"; $repoUrl="https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git"; $repo="$HOME\terrabrasilis-inpe-downloader"; if (-not (Get-Command git -ErrorAction SilentlyContinue)) { winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements }; if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command py -ErrorAction SilentlyContinue)) { winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements }; $env:Path=[Environment]::GetEnvironmentVariable("Path","Machine")+";"+[Environment]::GetEnvironmentVariable("Path","User"); if (-not (Test-Path $repo)) { git clone $repoUrl $repo }; Set-Location $repo; git pull origin main; $py=(Get-Command py -ErrorAction SilentlyContinue)?.Source; if ($py) { $pycmd=@($py,"-3") } else { $pycmd=@((Get-Command python).Source) }; if (Test-Path .\setup_env.py) { & $pycmd[0] @($pycmd[1..($pycmd.Length-1)]) setup_env.py }; $runpy=if (Test-Path .\.venv\Scripts\python.exe) { ".\.venv\Scripts\python.exe" } else { $pycmd[0] }; if ($runpy -eq $pycmd[0]) { & $runpy @($pycmd[1..($pycmd.Length-1)]) run_pipeline.py --from 1 } else { & $runpy run_pipeline.py --from 1 }
+```
+
+Manual setup:
+
 ```bash
 git clone https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git
 cd terrabrasilis-inpe-downloader

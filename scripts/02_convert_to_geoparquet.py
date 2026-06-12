@@ -187,6 +187,14 @@ _DEST_DIR = Path(str(CONFIG["dest_dir"]))
 _SOURCE_DIR = _ZIP_ROOT
 _SHP_SIDECAR = frozenset({".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj", ".sbn", ".sbx"})
 _RASTER_EXT = frozenset({".tif", ".tiff"})
+_CRS_FALLBACKS = {
+    # Some GDAL/PROJ builds do not ship the ESRI authority database entry.
+    # This is ESRI:102033, South America Albers Equal Area Conic.
+    "ESRI:102033": (
+        "+proj=aea +lat_0=-32 +lon_0=-60 +lat_1=-5 +lat_2=-42 "
+        "+x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+    ),
+}
 SEP = "=" * 65
 DIV = "-" * 65
 REPORT_DIR = REPORTS_DIR
@@ -500,6 +508,20 @@ def _convert_vector(job: Job) -> tuple[str, float, str | None]:
         return "error", src_mb, str(exc)
 
 
+def _raster_dst_crs():
+    """Resolve the configured raster CRS, including local fallbacks."""
+    from rasterio.crs import CRS
+
+    crs_text = str(CONFIG["raster_crs"]).strip()
+    try:
+        return CRS.from_user_input(crs_text)
+    except Exception:
+        fallback = _CRS_FALLBACKS.get(crs_text.upper())
+        if fallback is None:
+            raise
+        return CRS.from_user_input(fallback)
+
+
 def _convert_raster(job: Job) -> tuple[str, float, str | None]:
     """
     Reproject to ESRI:102033 and write a COG GeoTIFF optimised for zonal stats.
@@ -515,19 +537,18 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
       automatically, avoiding full-res reads for coarse summary statistics.
     """
     import rasterio
-    from rasterio.crs import CRS
     from rasterio.enums import Resampling
     from rasterio.warp import calculate_default_transform, reproject
 
     src_mb = _source_mb(job)
-    dst_crs = CRS.from_user_input(str(CONFIG["raster_crs"]))
-    tile_px = int(CONFIG["cog_tile_px"])
-    compress = str(CONFIG["raster_compress"])
-    overview_levels: list[int] = CONFIG["overview_levels"]  # type: ignore[assignment]
-
     job.out_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
+        dst_crs = _raster_dst_crs()
+        tile_px = int(CONFIG["cog_tile_px"])
+        compress = str(CONFIG["raster_compress"])
+        overview_levels: list[int] = CONFIG["overview_levels"]  # type: ignore[assignment]
+
         with rasterio.open(job.local_path) as src:
             transform, width, height = calculate_default_transform(
                 src.crs, dst_crs, src.width, src.height, *src.bounds
@@ -588,9 +609,17 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
 
 def _run_job(job: Job) -> tuple[str, float, str | None]:
     """Run the appropriate conversion function for a job."""
-    if job.kind == "tif":
-        return _convert_raster(job)
-    return _convert_vector(job)
+    try:
+        if job.kind == "tif":
+            return _convert_raster(job)
+        return _convert_vector(job)
+    except Exception as exc:
+        try:
+            src_mb = _source_mb(job)
+        except Exception:
+            src_mb = 0.0
+        job.out_path.unlink(missing_ok=True)
+        return "error", src_mb, str(exc)
 
 
 # ---------------------------------------------------------------------------

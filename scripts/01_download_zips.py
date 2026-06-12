@@ -449,7 +449,8 @@ def _find_existing(z: ZipEntry) -> Path | None:
     global _EXISTING_ZIP_INDEX
     if _EXISTING_ZIP_INDEX is None:
         _EXISTING_ZIP_INDEX = _index_existing_zips()
-    candidates = _EXISTING_ZIP_INDEX.get(z["filename_local"], [])
+    candidates_raw = _EXISTING_ZIP_INDEX.get(z["filename_local"], [])
+    candidates = [candidates_raw] if isinstance(candidates_raw, Path) else candidates_raw
     if not candidates:
         return None
 
@@ -663,7 +664,9 @@ def _download_one(
 
         tmp.rename(dest)
         if _EXISTING_ZIP_INDEX is not None:
-            _EXISTING_ZIP_INDEX[name] = dest
+            cached = _EXISTING_ZIP_INDEX.get(name, [])
+            candidates = [cached] if isinstance(cached, Path) else cached
+            _EXISTING_ZIP_INDEX[name] = [dest, *candidates]
         print(f"  DONE   {label}")
         return name, "ok", None
 

@@ -6,7 +6,9 @@ __all__: list[str] = []
 import importlib.util
 import json
 import logging
+import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -82,6 +84,43 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
         sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
 
 
+def _proj_db_layout_minor(proj_db: Path) -> int | None:
+    """Read the PROJ database minor layout version without importing PROJ."""
+    try:
+        with sqlite3.connect(f"file:{proj_db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT value FROM metadata WHERE key = 'DATABASE.LAYOUT.VERSION.MINOR'"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _configure_proj_data() -> None:
+    """Prefer Rasterio's bundled PROJ database over stale global installs."""
+    spec = importlib.util.find_spec("rasterio")
+    if spec is None or spec.origin is None:
+        return
+
+    proj_dir = Path(spec.origin).resolve().parent / "proj_data"
+    proj_db = proj_dir / "proj.db"
+    bundled_minor = _proj_db_layout_minor(proj_db)
+    if bundled_minor is None or bundled_minor < 5:
+        return
+
+    for env_name in ("PROJ_DATA", "PROJ_LIB"):
+        current = os.environ.get(env_name)
+        current_db = Path(current) / "proj.db" if current else None
+        current_minor = _proj_db_layout_minor(current_db) if current_db else None
+        if current_minor is None or current_minor < 5:
+            os.environ[env_name] = str(proj_dir)
+
+
 _bootstrap(
     ("git+https://github.com/abrandaojr/vector-to-geoparquet.git", "vector_to_geoparquet"),
     ("geopandas", "geopandas"),
@@ -92,6 +131,7 @@ _bootstrap(
     ("tqdm", "tqdm"),
     ("rasterio", "rasterio"),
 )
+_configure_proj_data()
 
 # Import heavy packages at module level so the one-time cold-start
 # compilation happens here (expected) rather than mid-scan inside a loop.

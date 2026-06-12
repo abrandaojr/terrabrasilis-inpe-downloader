@@ -130,8 +130,10 @@ CONFIG: dict[str, Any] = {
     "base_url": "https://terrabrasilis.dpi.inpe.br/en/download-files/",
     "root_folder": ZIP_ROOT,
     "http_timeout": 30,
-    "download_timeout": 600,
-    "chunk_size": 32 * 1024 * 1024,  # 32 MB per stream chunk â€” maximize single-file throughput
+    "download_timeout": 1800,
+    "download_attempts": 50,
+    "download_retry_delay": 10,
+    "chunk_size": 8 * 1024 * 1024,  # Smaller chunks make large-file resumes more reliable.
     # Files to permanently skip (exact filename, case-sensitive).
     "skip_files": [
         "prodes_brasil_2023_arte.zip",
@@ -147,6 +149,8 @@ ROOT_FOLDER = Path(str(CONFIG["root_folder"]))
 DEST_FOLDER = ROOT_FOLDER / datetime.now().strftime("%Y-%m-%d")
 HTTP_TIMEOUT = int(CONFIG["http_timeout"])
 DOWNLOAD_TIMEOUT = int(CONFIG["download_timeout"])
+DOWNLOAD_ATTEMPTS = int(CONFIG["download_attempts"])
+DOWNLOAD_RETRY_DELAY = int(CONFIG["download_retry_delay"])
 CHUNK_SIZE = int(CONFIG["chunk_size"])
 SKIP_FILES = frozenset(CONFIG["skip_files"])
 STATIC_HTML_LIMIT_BYTES = 8 * 1024 * 1024
@@ -590,6 +594,37 @@ def ask_confirmation(pending: list[ZipEntry]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _content_range_total(value: str | None) -> int | None:
+    """Return the total size from a Content-Range header, when available."""
+    if not value or "/" not in value:
+        return None
+    total = value.rsplit("/", 1)[1].strip()
+    if not total or total == "*":
+        return None
+    try:
+        return int(total)
+    except ValueError:
+        return None
+
+
+def _expected_download_size(response: requests.Response, bytes_done: int) -> int | None:
+    """Infer the final file size from response headers."""
+    content_range_total = _content_range_total(response.headers.get("Content-Range"))
+    if content_range_total is not None:
+        return content_range_total
+
+    content_length = response.headers.get("Content-Length")
+    if not content_length:
+        return None
+
+    try:
+        length = int(content_length)
+    except ValueError:
+        return None
+
+    return bytes_done + length if response.status_code == 206 else length
+
+
 def _download_one(
     z: ZipEntry,
     folder: Path,
@@ -618,65 +653,93 @@ def _download_one(
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    bytes_done = tmp.stat().st_size if tmp.exists() else 0
-    if bytes_done:
-        print(f"  RESUME {label}  (have {bytes_done / 1_048_576:.1f} MB)")
-    else:
-        print(f"  START  {label}")
+    last_error: str | None = None
 
-    extra_headers = {"Range": f"bytes={bytes_done}-"} if bytes_done else {}
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        bytes_done = tmp.stat().st_size if tmp.exists() else 0
+        attempt_note = f" attempt {attempt}/{DOWNLOAD_ATTEMPTS}"
+        if bytes_done:
+            print(f"  RESUME {label}  (have {bytes_done / 1_048_576:.1f} MB;{attempt_note})")
+        else:
+            print(f"  START  {label}  ({attempt_note.strip()})")
 
-    try:
-        with session.get(
-            z["url"], headers=extra_headers, stream=True, timeout=DOWNLOAD_TIMEOUT
-        ) as r:
-            if r.status_code == 416:
-                print("    Range rejected, restarting from byte 0...")
-                bytes_done = 0
-                extra_headers = {}
-                tmp.unlink(missing_ok=True)
-                r.close()
-                r = session.get(z["url"], stream=True, timeout=DOWNLOAD_TIMEOUT)
+        extra_headers = {"Range": f"bytes={bytes_done}-"} if bytes_done else {}
 
-            if r.status_code == 403:
-                return name, "forbidden", "403 Forbidden"
+        try:
+            with session.get(
+                z["url"], headers=extra_headers, stream=True, timeout=DOWNLOAD_TIMEOUT
+            ) as r:
+                if r.status_code == 416:
+                    ok, _ = verify_zip(tmp) if tmp.exists() else (False, "missing tmp")
+                    if ok:
+                        tmp.rename(dest)
+                        if _EXISTING_ZIP_INDEX is not None:
+                            cached = _EXISTING_ZIP_INDEX.get(name, [])
+                            candidates = [cached] if isinstance(cached, Path) else cached
+                            _EXISTING_ZIP_INDEX[name] = [dest, *candidates]
+                        print(f"  DONE   {label}")
+                        return name, "ok", None
+                    print("    Range rejected; restarting from byte 0...")
+                    bytes_done = 0
+                    tmp.unlink(missing_ok=True)
+                    continue
 
-            if r.status_code not in (200, 206):
-                r.raise_for_status()
+                if r.status_code == 403:
+                    return name, "forbidden", "403 Forbidden"
 
-            content_length = r.headers.get("Content-Length")
-            total_bytes = (int(content_length) + bytes_done) if content_length else None
+                if r.status_code not in (200, 206):
+                    r.raise_for_status()
 
-            mode = "ab" if bytes_done else "wb"
-            with open(tmp, mode) as f, tqdm(
-                total=total_bytes,
-                initial=bytes_done,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                desc=f"    {name[:55]}",
-                ncols=90,
-                mininterval=0.5,  # update bar at most twice per second
-            ) as bar:
-                for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                    f.write(chunk)
-                    bar.update(len(chunk))
+                if bytes_done and r.status_code == 200:
+                    print("    Server ignored resume range; restarting this file from byte 0...")
+                    bytes_done = 0
+                    tmp.unlink(missing_ok=True)
 
-        tmp.rename(dest)
-        if _EXISTING_ZIP_INDEX is not None:
-            cached = _EXISTING_ZIP_INDEX.get(name, [])
-            candidates = [cached] if isinstance(cached, Path) else cached
-            _EXISTING_ZIP_INDEX[name] = [dest, *candidates]
-        print(f"  DONE   {label}")
-        return name, "ok", None
+                total_bytes = _expected_download_size(r, bytes_done)
+                mode = "ab" if bytes_done else "wb"
+                with open(tmp, mode) as f, tqdm(
+                    total=total_bytes,
+                    initial=bytes_done,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=f"    {name[:55]}",
+                    ncols=90,
+                    mininterval=0.5,  # update bar at most twice per second
+                ) as bar:
+                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        bar.update(len(chunk))
 
-    except KeyboardInterrupt:
-        print(f"\n  Interrupted. Progress saved in: {tmp}")
-        raise
+            if total_bytes is not None:
+                actual_bytes = tmp.stat().st_size if tmp.exists() else 0
+                if actual_bytes < total_bytes:
+                    raise RuntimeError(
+                        f"incomplete transfer: {actual_bytes} of {total_bytes} bytes"
+                    )
 
-    except Exception as exc:
-        print(f"  ERROR  {label}: {exc}")
-        return name, "error", str(exc)
+            tmp.rename(dest)
+            if _EXISTING_ZIP_INDEX is not None:
+                cached = _EXISTING_ZIP_INDEX.get(name, [])
+                candidates = [cached] if isinstance(cached, Path) else cached
+                _EXISTING_ZIP_INDEX[name] = [dest, *candidates]
+            print(f"  DONE   {label}")
+            return name, "ok", None
+
+        except KeyboardInterrupt:
+            print(f"\n  Interrupted. Progress saved in: {tmp}")
+            raise
+
+        except Exception as exc:
+            last_error = str(exc)
+            print(f"  RETRY  {label}: {last_error}")
+            if attempt < DOWNLOAD_ATTEMPTS:
+                time.sleep(DOWNLOAD_RETRY_DELAY)
+
+    print(f"  ERROR  {label}: exhausted {DOWNLOAD_ATTEMPTS} attempts; last error: {last_error}")
+    return name, "error", last_error
 
 
 # ---------------------------------------------------------------------------

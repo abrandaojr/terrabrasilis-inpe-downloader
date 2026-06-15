@@ -1,37 +1,43 @@
 # PRODES TerraBrasilis Pipeline
 
-Portable Python scripts to download, convert, validate, analyze, and present
-INPE PRODES deforestation data from TerraBrasilis.
+[![CI](https://github.com/abrandaojr/terrabrasilis-inpe-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/abrandaojr/terrabrasilis-inpe-downloader/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+Portable geospatial data pipeline for downloading, converting, validating,
+analyzing, and presenting INPE PRODES/TerraBrasilis deforestation data.
 
 Author: Amintas Brandao Jr. `<abrandaojr@gmail.com>`  
 Affiliation: Imazon - Instituto do Homem e Meio Ambiente da Amazonia
 
-## What This Repository Does
+## Overview
 
-- Downloads public PRODES ZIP archives from TerraBrasilis.
+This repository turns public TerraBrasilis ZIP archives into analysis-ready
+geospatial datasets and communication products:
+
+- Downloads and validates PRODES ZIP archives from TerraBrasilis.
 - Converts vector layers to GeoParquet and rasters to Cloud-Optimized GeoTIFF.
-- Builds quality reports, catalogs, charts, Excel workbooks, and PowerPoint decks.
-- Creates every required local folder automatically.
-- Runs on any machine with Python 3.11+ installed.
+- Builds data-quality reports, lineage metadata, catalogs, and observability logs.
+- Generates charts, Excel workbooks, and bilingual PowerPoint presentations.
+- Runs on a clean Windows machine with one PowerShell command.
 
-No machine-specific path is required. By default, generated files are written to
-`workspace/` inside the cloned repository. Set `PRODES_HOME` to use another disk
-or folder.
+Generated files are written to `workspace/` by default. Set `PRODES_HOME` to use
+another disk or folder.
 
 ## Quick Start
 
-### One-command Windows PowerShell setup and run
+### Windows PowerShell: fresh GitHub code, keep downloaded ZIPs
 
-Open PowerShell and paste this command. It installs Git/Python with `winget` if
-needed, replaces the local repository with a fresh copy from GitHub, preserves
-the existing `workspace/` folder so downloaded ZIPs are not deleted, prepares
-the Python environment, and runs the pipeline from step 1:
+Open PowerShell and paste the command below. It installs Git/Python if needed,
+replaces the local repository with the latest GitHub version, preserves
+`workspace/` so already downloaded ZIPs are not deleted, prepares the Python
+environment, and runs the pipeline from step 1.
 
 ```powershell
 $ErrorActionPreference="Stop"; $repoUrl="https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git"; $repo=Join-Path $HOME "terrabrasilis-inpe-downloader"; $workspace=Join-Path $repo "workspace"; $backup=Join-Path $HOME "terrabrasilis_workspace_backup"; if (-not (Get-Command git -ErrorAction SilentlyContinue)) { winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements }; if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command py -ErrorAction SilentlyContinue)) { winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements }; $env:Path=[Environment]::GetEnvironmentVariable("Path","Machine")+";"+[Environment]::GetEnvironmentVariable("Path","User")+";C:\Program Files\Git\cmd"; if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }; if (Test-Path $workspace) { Move-Item -LiteralPath $workspace -Destination $backup }; if (Test-Path $repo) { Remove-Item -LiteralPath $repo -Recurse -Force }; git clone $repoUrl $repo; if (Test-Path $backup) { Move-Item -LiteralPath $backup -Destination $workspace }; Set-Location $repo; if (Test-Path .\setup_env.py) { if (Get-Command py -ErrorAction SilentlyContinue) { py -3 setup_env.py } else { python setup_env.py } }; if (Test-Path .\.venv\Scripts\python.exe) { .\.venv\Scripts\python.exe run_pipeline.py --from 1 } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 run_pipeline.py --from 1 } else { python run_pipeline.py --from 1 }
 ```
 
-Manual setup:
+### Manual Setup
 
 ```bash
 git clone https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git
@@ -49,7 +55,7 @@ Activate the environment:
 source .venv/bin/activate
 ```
 
-Run the full pipeline:
+Run the pipeline:
 
 ```bash
 python run_pipeline.py
@@ -61,54 +67,73 @@ Useful run modes:
 python run_pipeline.py -k
 python run_pipeline.py --from 2
 python run_pipeline.py --steps 1 3
-python run_pipeline.py --from 2 -k
+python run_pipeline.py --from 5
 ```
 
-The individual stage scripts can also be run directly, for example
-`python scripts/01_download_zips.py`. They auto-install missing Python packages
-into the active interpreter, but `setup_env.py` is the recommended reproducible
-setup path.
+## Outputs
+
+| Output type | Location |
+| --- | --- |
+| Downloaded TerraBrasilis ZIPs | `workspace/zip/` |
+| GeoParquet and COG outputs | `workspace/geoparquet/` |
+| Organized GeoParquet catalog | `workspace/geoparquet/_organized/` |
+| Figures and charts | `workspace/figures/*.png` |
+| Excel workbooks | `workspace/tables/` |
+| PowerPoint presentations | `workspace/presentations/` |
+| Quality reports and logs | `workspace/reports/` |
+
+## Methodology Rules
+
+The pipeline keeps a strict separation between historical context and analytical
+claims:
+
+- PRODES statistics, cumulative metrics, rankings, conclusions, and analytical
+  presentation text use 2008 as the analytical base year.
+- Years before 2008 may appear only as illustrative context in trend charts and
+  P1 series tables.
+- `VS_`, `vegetacao_secundaria`, `floresta_secundaria`, and English secondary
+  vegetation variants are treated as secondary vegetation, not PRODES
+  deforestation.
+- All analytical figures generated by the pipeline are saved under
+  `workspace/figures/`.
+
+## Pipeline Stages
+
+| Step | Script | Purpose |
+| ---: | --- | --- |
+| 1 | `scripts/01_download_zips.py` | Download and validate TerraBrasilis ZIP archives. |
+| 2 | `scripts/02_convert_to_geoparquet.py` | Convert vectors to GeoParquet and rasters to COG GeoTIFF. |
+| 3 | `scripts/03_deforestation_chart.py` | Generate an annual deforestation chart. |
+| 4 | `scripts/04_generate_presentation.py` | Build a bilingual press PowerPoint with charts and maps. |
+| 5 | `scripts/05_organize_geoparquet.py` | Organize and catalog GeoParquet/COG outputs. |
+| 6 | `scripts/06_export_tables.py` | Export analytical Excel/PPTX products and charts. |
+| 7 | `scripts/07_visual_story_deliverables.py` | Generate additional didactic presentation/table deliverables. |
 
 ## Repository Layout
 
 ```text
 repository/
-  run_pipeline.py              # friendly entry point
-  setup_env.py                 # creates .venv and installs dependencies
-  scripts/                     # runnable pipeline stages
-    00_pipeline.py
-    01_download_zips.py
-    02_convert_to_geoparquet.py
-    03_deforestation_chart.py
-    04_generate_presentation.py
-    05_organize_geoparquet.py
-    06_export_tables.py
-    07_visual_story_deliverables.py
-  prodes_pipeline/             # shared package code
-    config.py
-    data_quality.py
-    pipeline_contracts.py
-  docs/
-    RELEASES.md
-    SECURITY.md
-  .github/                     # issue and pull request templates
+  run_pipeline.py              # root entry point
+  setup_env.py                 # reproducible environment setup
+  scripts/                     # pipeline stages
+  prodes_pipeline/             # shared config, contracts, quality helpers
+  docs/                        # release and security notes
+  tests/                       # regression tests
+  .github/                     # CI, issue templates, PR template
 ```
 
-## Portable Workspace
+## Workspace Configuration
 
-Default layout:
+Default workspace:
 
 ```text
-repository/
-  scripts/
-  prodes_pipeline/
-  workspace/
-    zip/
-    geoparquet/
-    tables/
-    figures/
-    presentations/
-    reports/
+workspace/
+  zip/
+  geoparquet/
+  tables/
+  figures/
+  presentations/
+  reports/
 ```
 
 Override the workspace:
@@ -121,7 +146,7 @@ $env:PRODES_HOME = "D:\prodes-workspace"
 export PRODES_HOME="/data/prodes-workspace"
 ```
 
-Optional advanced overrides:
+Advanced path overrides:
 
 ```text
 PRODES_ZIP_ROOT
@@ -133,148 +158,26 @@ PRODES_PRESENTATIONS_DIR
 PRODES_EXTRACT_DIR
 ```
 
-## Pipeline
+## Quality and CI
 
-```text
-TerraBrasilis download page
-  -> scripts/01_download_zips.py
-  -> scripts/02_convert_to_geoparquet.py
-  -> scripts/03_deforestation_chart.py
-  -> scripts/04_generate_presentation.py
-  -> scripts/05_organize_geoparquet.py
-  -> scripts/06_export_tables.py
-  -> scripts/07_visual_story_deliverables.py
-```
+Each stage writes machine-readable reports to `workspace/reports/`, including
+input/output inventory, freshness checks, row/file counts, lineage records, and
+stage timing.
 
-### 01 Download ZIPs
-
-Discovers, downloads, resumes, and validates TerraBrasilis ZIP archives.
-
-Key outputs:
-
-- `workspace/zip/YYYY-MM-DD/**/*.zip`
-- `workspace/zip/YYYY-MM-DD/terrabrasilis_zips.csv`
-- `workspace/zip/YYYY-MM-DD/terrabrasilis_zips.json`
-- `workspace/reports/*.json`
-
-### 02 Convert to GeoParquet and COG
-
-Converts vector data to GeoParquet and raster data to Cloud-Optimized GeoTIFF.
-
-Key outputs:
-
-- `workspace/geoparquet/**/*.parquet`
-- `workspace/geoparquet/**/*.tif`
-- `workspace/reports/02_gpkg_layer_cache.json`
-
-### 03 Chart
-
-Creates a publication-ready annual deforestation chart.
-
-Key output:
-
-- `workspace/figures/amazon_deforestation_norad.png`
-
-### 04 Presentation
-
-Creates a bilingual press briefing PowerPoint.
-
-Key output:
-
-- `workspace/presentations/PRODES_Press_Briefing.pptx`
-
-### 05 Organize GeoParquet
-
-Builds a cleaner cataloged GeoParquet folder structure. This step is
-idempotent: it can organize raw conversion outputs or refresh the catalog when
-files already live under `_organized/`.
-
-Key output:
-
-- `workspace/geoparquet/_organized/`
-
-### 06 Export Tables
-
-Exports analytical tables and charts. PRODES statistics, cumulative metrics,
-rankings, conclusions, and analytical presentation text use 2008 as the
-analytical base year. Years before 2008 may appear only as illustrative context
-in trend charts and P1 series tables.
-
-Secondary vegetation layers are detected from names such as `VS_`,
-`vegetacao_secundaria`, `floresta_secundaria`, and English variants. They feed
-the VS/secondary-vegetation outputs and are excluded from PRODES deforestation
-statistics.
-
-Key outputs:
-
-- `workspace/tables/PRODES_Analytics_*.xlsx`
-- `workspace/tables/PRODES_Analytics_*.pptx`
-- `workspace/figures/*.png`
-
-### 07 Visual Story Deliverables
-
-Creates additional didactic PowerPoint and Excel deliverables.
-
-Key outputs:
-
-- `workspace/presentations/PRODES_VISUAL_STORY_*.pptx`
-- `workspace/tables/PRODES_VISUAL_STORY_*.xlsx`
-- `workspace/figures/prodes_annual_deforestation_*.png`
-
-## Dependencies
-
-Required:
-
-- Python 3.11+
-- Internet access for TerraBrasilis downloads and first-time dependency install
-- Chrome or Chromium only if the Selenium fallback is needed for JavaScript
-  rendering
-
-Recommended setup:
-
-```bash
-python setup_env.py
-```
-
-Manual setup:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate      # Windows
-python -m pip install --upgrade pip uv
-python -m uv pip install -r requirements.txt
-```
-
-On macOS/Linux, activate with `source .venv/bin/activate`.
-
-## Quality and Observability
-
-Each stage writes JSON quality reports to `workspace/reports/`, including:
-
-- input and output inventory
-- freshness checks
-- row and file counts
-- lineage records
-- stage timing
-
-Run a syntax check before publishing changes:
+Local validation:
 
 ```bash
 python -m compileall -q run_pipeline.py setup_env.py scripts prodes_pipeline tests
 python -m unittest discover -s tests
 ```
 
-## Releases and Packages
+GitHub Actions runs the same checks on pushes and pull requests.
 
-- Release notes live in `CHANGELOG.md`.
-- Release process notes live in `docs/RELEASES.md`.
-- Package metadata lives in `pyproject.toml`.
-- Generated data products are intentionally not published as GitHub Packages.
+## Data Source and Citation
 
-## Citation
-
-If you use this repository, cite this project and cite INPE/PRODES according to
-the official data provider requirements.
+This project downloads public data from INPE TerraBrasilis. When publishing
+derived outputs, cite INPE/PRODES according to the official data provider
+requirements.
 
 ## License
 

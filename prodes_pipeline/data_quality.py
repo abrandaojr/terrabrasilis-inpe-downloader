@@ -6,7 +6,7 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, pstdev
@@ -111,7 +111,10 @@ class JsonLineLogger:
     def emit(self, event: str, **fields: Any) -> None:
         payload = {"timestamp": utc_now_iso(), "event": event, **fields}
         with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+            fh.write(
+                json.dumps(to_jsonable(payload), ensure_ascii=False, sort_keys=True)
+                + "\n"
+            )
 
 
 def utc_now_iso() -> str:
@@ -159,20 +162,22 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(
         path,
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(to_jsonable(payload), ensure_ascii=False, indent=2, sort_keys=True),
     )
 
 
 def to_jsonable(value: Any) -> Any:
-    if hasattr(value, "__dict__") and not isinstance(value, type):
+    if is_dataclass(value) and not isinstance(value, type):
         try:
-            return asdict(value)
+            return to_jsonable(asdict(value))
         except TypeError:
             pass
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, tuple):
         return list(value)
+    if isinstance(value, set):
+        return sorted((to_jsonable(v) for v in value), key=repr)
     if isinstance(value, list):
         return [to_jsonable(v) for v in value]
     if isinstance(value, dict):

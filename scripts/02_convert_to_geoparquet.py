@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 __version__ = "2.0.0"
 __all__: list[str] = []
@@ -37,10 +37,10 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
 
     Strategy order (most to least reliable for targeting sys.executable):
-      1. python -m pip          â€” always installs into the running interpreter
-      2. uv pip --python        â€” faster wheel resolution for native libs
-      3. python -m uv pip       â€” uv via module, same target guarantee
-      4. pip --break-system-pkg â€” last resort for externally-managed envs
+      1. python -m pip          — always installs into the running interpreter
+      2. uv pip --python        — faster wheel resolution for native libs
+      3. python -m uv pip       — uv via module, same target guarantee
+      4. pip --break-system-pkg — last resort for externally-managed envs
 
     After each attempt, importlib.invalidate_caches() re-scans site-packages
     so that newly installed packages are immediately discoverable.
@@ -157,7 +157,7 @@ from prodes_pipeline.config import GEOPARQUET_DIR, REPORTS_DIR, ZIP_ROOT, ensure
 
 
 # ---------------------------------------------------------------------------
-# CONFIG  â† the only section that needs to be edited
+# CONFIG  ← the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, object] = {
@@ -180,9 +180,9 @@ CONFIG: dict[str, object] = {
     "compression_level": 3,
     "hilbert_p": 15,
     # ---- Raster COG options (optimized for zonal stats, 64 GB RAM) ---------
-    # Target CRS for all rasters (equal-area â€” required for correct area math)
+    # Target CRS for all rasters (equal-area — required for correct area math)
     "raster_crs": "ESRI:102033",
-    # Internal COG tile size in pixels. 512Ã—512 is the sweet spot for
+    # Internal COG tile size in pixels. 512×512 is the sweet spot for
     # windowed reads in zonal stats: large enough for sequential I/O,
     # small enough for random-access queries over small polygons.
     "cog_tile_px": 512,
@@ -191,7 +191,7 @@ CONFIG: dict[str, object] = {
     # compression ratios and your GDAL supports it.
     "raster_compress": "DEFLATE",
     # Overview decimation levels. With 30 m resolution, level 32 covers
-    # ~1 km â€” enough for national-scale visualisation without loading full res.
+    # ~1 km — enough for national-scale visualisation without loading full res.
     "overview_levels": [2, 4, 8, 16, 32],
 }
 
@@ -301,7 +301,7 @@ class Job(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 â€” Inspect ZIPs â†’ build manifest
+# Stage 1 — Inspect ZIPs → build manifest
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +361,7 @@ def build_manifest(zip_files: list[Path]) -> list[Job]:
         rel_dir = str(zip_path.parent.relative_to(_SOURCE_DIR))
         zip_stem = zip_path.stem
 
-        # â”€â”€ Fast path: skip ZIPs whose output directory has converted files â”€â”€
+        # ── Fast path: skip ZIPs whose output directory has converted files ──
         out_dir = _DEST_DIR / rel_dir / zip_stem
         if out_dir.exists() and any(
             p.stat().st_size > 0
@@ -441,12 +441,12 @@ def build_manifest(zip_files: list[Path]) -> list[Job]:
     bar.close()
     _save_layer_cache()
     if skipped:
-        log.info(f"[scan] {skipped} ZIP(s) skipped â€” output already exists")
+        log.info(f"[scan] {skipped} ZIP(s) skipped — output already exists")
     return gpkg_jobs + shp_jobs + tif_jobs
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 â€” Extract pending source files
+# Stage 2 — Extract pending source files
 # ---------------------------------------------------------------------------
 
 
@@ -464,7 +464,7 @@ def extract_pending(jobs: list[Job], tmp_dir: Path) -> list[Job]:
     pending = {k: v for k, v in unique.items() if not v.exists()}
     skipped = len(unique) - len(pending)
     if skipped:
-        log.info(f"[extract] {skipped} file(s) already extracted â€” skipping")
+        log.info(f"[extract] {skipped} file(s) already extracted — skipping")
 
     raw_extract_dir = tmp_dir / "_raw"
     bar = tqdm(total=len(pending), desc="  extracting", unit="file", ncols=80)
@@ -504,7 +504,7 @@ def extract_pending(jobs: list[Job], tmp_dir: Path) -> list[Job]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 â€” Convert
+# Stage 3 — Convert
 # ---------------------------------------------------------------------------
 
 
@@ -567,13 +567,13 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
     Reproject to ESRI:102033 and write a COG GeoTIFF optimised for zonal stats.
 
     Design notes (64 GB RAM):
-    - 512Ã—512 internal tiles balance sequential throughput and random access.
+    - 512×512 internal tiles balance sequential throughput and random access.
       Larger tiles (e.g. 1024) speed up sequential reads but hurt small-polygon
       zonal stats because GDAL must decompress a larger block per read.
     - DEFLATE + predictor=2 decompresses faster than ZSTD on most CPUs for
       continuous-value rasters (vegetation indices, biomass, etc.), making it
       the better choice when zonal stats is the primary workload.
-    - Overviews up to Ã—32 let tools like rasterstats pick the right resolution
+    - Overviews up to ×32 let tools like rasterstats pick the right resolution
       automatically, avoiding full-res reads for coarse summary statistics.
     """
     import rasterio
@@ -611,7 +611,7 @@ def _convert_raster(job: Job) -> tuple[str, float, str | None]:
                     "height": height,
                     "driver": "GTiff",
                     "compress": compress,
-                    "predictor": 2,  # delta predictor â€” effective for all numeric types
+                    "predictor": 2,  # delta predictor — effective for all numeric types
                     "tiled": True,
                     "blockxsize": tile_px,
                     "blockysize": tile_px,
@@ -721,7 +721,7 @@ def _print_report(rows: list[dict], totals: dict) -> None:
         f"ok: {totals['ok']}  "
         f"skipped: {totals['skipped']}  "
         f"errors: {totals['errors']}  |  "
-        f"Src: {tot_src:.1f} MiB  â†’  Out: {tot_out:.1f} MiB  ({tot_pct:.1f}%)  "
+        f"Src: {tot_src:.1f} MiB  →  Out: {tot_out:.1f} MiB  ({tot_pct:.1f}%)  "
         f"elapsed: {_fmt_duration(totals['elapsed'])}"
     )
     print(sep)
@@ -809,12 +809,12 @@ def main() -> None:
     t0 = time.perf_counter()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n{SEP}")
-    print(f"  PRODES â†’ GeoParquet + COG  v{__version__}  |  {now}")
+    print(f"  PRODES → GeoParquet + COG  v{__version__}  |  {now}")
     print(f"{SEP}")
 
     require_existing_dir(_ZIP_ROOT, "ZIP root")
 
-    # 1. Existing outputs â€” indexed by filename so files moved to _organized/ by
+    # 1. Existing outputs — indexed by filename so files moved to _organized/ by
     # 05_organize_geoparquet.py are still recognised (different path, same name).
     existing_names: set[str] = set()
     if _DEST_DIR.exists():
@@ -826,11 +826,11 @@ def main() -> None:
         }
     log.info(f"\n  [1/3] existing outputs : {len(existing_names)}")
 
-    # 2. Discover ZIPs â€” all sub-folders of zip_root, most recent copy per filename
+    # 2. Discover ZIPs — all sub-folders of zip_root, most recent copy per filename
     zip_files = _latest_zips(_ZIP_ROOT)
     log.info(f"  [2/3] scanning {len(zip_files)} zip archive(s) from {_ZIP_ROOT} ...")
     if not zip_files:
-        sys.exit("  No zip archives found â€” nothing to do.")
+        sys.exit("  No zip archives found — nothing to do.")
 
     preflight_timer = StageTimer("02_zip_preflight")
     zip_quality = _zip_preflight(zip_files)
@@ -888,7 +888,7 @@ def main() -> None:
         ),
     )
 
-    # 3. Cross-reference by filename â€” catches files reorganised to _organized/ by
+    # 3. Cross-reference by filename — catches files reorganised to _organized/ by
     # 05_organize_geoparquet.py that no longer live at the expected out_path.
     done_jobs = [j for j in manifest if j.out_path.name in existing_names]
     todo_jobs = [j for j in manifest if j.out_path.name not in existing_names]
@@ -934,7 +934,7 @@ def main() -> None:
         print(f"  Quality report: {report_path}")
         return
 
-    # 4 + 5. Extract â†’ Convert
+    # 4 + 5. Extract → Convert
     _extract_cfg = CONFIG.get("extract_dir")
     if _extract_cfg:
         extract_root = Path(str(_extract_cfg))

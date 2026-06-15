@@ -1,4 +1,4 @@
-﻿"""
+"""
 03_deforestation_chart.py
 =========================
 Generates a publication-ready bar chart of annual Amazon deforestation
@@ -14,8 +14,8 @@ Usage
 
 Author
 ------
-Amintas BrandÃ£o Jr. <abrandaojr@gmail.com>
-Imazon â€” Instituto do Homem e Meio Ambiente da AmazÃ´nia
+Amintas Brandão Jr. <abrandaojr@gmail.com>
+Imazon — Instituto do Homem e Meio Ambiente da Amazônia
 
 License
 -------
@@ -56,10 +56,10 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
 
     Strategy order (most to least reliable for targeting sys.executable):
-      1. python -m pip          â€” always installs into the running interpreter
-      2. uv pip --python        â€” faster wheel resolution for native libs
-      3. python -m uv pip       â€” uv via module, same target guarantee
-      4. pip --break-system-pkg â€” last resort for externally-managed envs
+      1. python -m pip          — always installs into the running interpreter
+      2. uv pip --python        — faster wheel resolution for native libs
+      3. python -m uv pip       — uv via module, same target guarantee
+      4. pip --break-system-pkg — last resort for externally-managed envs
 
     After each attempt, importlib.invalidate_caches() re-scans site-packages
     so that newly installed packages are immediately discoverable.
@@ -138,7 +138,7 @@ from prodes_pipeline.config import FIGURES_DIR, REPORTS_DIR, ensure_pipeline_dir
 
 
 # ---------------------------------------------------------------------------
-# CONFIG  â† the only section that needs to be edited
+# CONFIG  ← the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, object] = {
@@ -257,7 +257,7 @@ def main() -> None:
     bx = pos[i28] + 0.52
     ax.annotate("", xy=(bx, TARGETS[2028]), xytext=(bx, ANNUAL_KM2[2025]),
                 arrowprops=dict(arrowstyle="<->", color=DGRAY, lw=1.1))
-    ax.text(bx + 0.18, (TARGETS[2028] + ANNUAL_KM2[2025]) / 2, "âˆ’30%",
+    ax.text(bx + 0.18, (TARGETS[2028] + ANNUAL_KM2[2025]) / 2, "−30%",
             va="center", fontsize=10.5, color=DGRAY, fontweight="bold")
 
     div_x = (pos[i25] + pos[i25 + 1]) / 2
@@ -269,7 +269,7 @@ def main() -> None:
 
     fig.text(0.0, 1.12,
              ("Project Goal: Reduce annual deforestation in Brazil's Legal Amazon to "
-              "4,000 kmÂ² by 2028"),
+              "4,000 km² by 2028"),
              fontsize=15, fontweight="bold", color="#111111",
              transform=ax.transAxes, va="top")
     fig.text(0.0, 1.058,
@@ -278,7 +278,7 @@ def main() -> None:
              fontsize=10, color="#888888",
              transform=ax.transAxes, va="top", linespacing=1.5)
     fig.text(0.0, -0.06,
-             "Source: INPE/PRODES. Historical peak: 29,059 kmÂ² in 1995.",
+             "Source: INPE/PRODES. 1995 peak shown as historical context only; analyses use 2008 onward.",
              fontsize=8.5, color="#BBBBBB",
              transform=ax.transAxes, va="top")
 

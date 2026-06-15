@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 __version__ = "1.0.0"
 
@@ -25,10 +25,10 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
     """Install missing packages into the current Python environment.
 
     Strategy order (most to least reliable for targeting sys.executable):
-      1. python -m pip          â€” always installs into the running interpreter
-      2. uv pip --python        â€” faster wheel resolution for native libs
-      3. python -m uv pip       â€” uv via module, same target guarantee
-      4. pip --break-system-pkg â€” last resort for externally-managed envs
+      1. python -m pip          — always installs into the running interpreter
+      2. uv pip --python        — faster wheel resolution for native libs
+      3. python -m uv pip       — uv via module, same target guarantee
+      4. pip --break-system-pkg — last resort for externally-managed envs
 
     After each attempt, importlib.invalidate_caches() re-scans site-packages
     so that newly installed packages are immediately discoverable.
@@ -123,7 +123,7 @@ class ZipEntry(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# CONFIG  â† the only section that needs to be edited
+# CONFIG  ← the only section that needs to be edited
 # ---------------------------------------------------------------------------
 
 CONFIG: dict[str, Any] = {

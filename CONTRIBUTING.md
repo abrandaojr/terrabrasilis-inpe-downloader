@@ -14,7 +14,12 @@ Thanks for helping improve this PRODES pipeline.
 - Keep generated data, presentations, images, and reports out of Git.
 - Use `PRODES_HOME` when testing outside the default `workspace/` folder.
 - Prefer small, focused commits.
-- Run `python -m py_compile run_pipeline.py setup_env.py scripts/*.py prodes_pipeline/*.py` before opening a pull request.
+- Keep PRODES analyses anchored to the 2008 analytical base year; earlier years
+  may be shown only as illustrative context.
+- Treat `VS_`, `vegetacao_secundaria`, and `floresta_secundaria` layers as
+  secondary vegetation, not PRODES deforestation.
+- Run `python -m compileall -q run_pipeline.py setup_env.py scripts prodes_pipeline tests` before opening a pull request.
+- Run `python -m unittest discover -s tests` for regression tests.
 
 ## Data Provider
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 05_organize_geoparquet.py
 =========================
 Reorganizes the configured GeoParquet workspace by:
@@ -8,9 +8,9 @@ Reorganizes the configured GeoParquet workspace by:
 
        _organized\\
            <Biome>\\
-               deforestation\\   â† accumulated / yearly deforestation layers
-               auxiliary\\       â† borders, hydrography, land-use, etc.
-               rasters\\         â† COG GeoTIFF files
+               deforestation\\   ← accumulated / yearly deforestation layers
+               auxiliary\\       ← borders, hydrography, land-use, etc.
+               rasters\\         ← COG GeoTIFF files
 
      When the same filename exists in multiple dated sub-folders,
      only the most recently modified copy is kept; older duplicates
@@ -30,8 +30,8 @@ Usage
 
 Author
 ------
-Amintas BrandÃ£o Jr. <abrandaojr@gmail.com>
-Imazon â€” Instituto do Homem e Meio Ambiente da AmazÃ´nia
+Amintas Brandão Jr. <abrandaojr@gmail.com>
+Imazon — Instituto do Homem e Meio Ambiente da Amazônia
 
 License
 -------
@@ -44,9 +44,11 @@ __version__ = "2.0.0"
 __all__: list[str] = []
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -133,6 +135,14 @@ _BIOME_NAMES = {
 }
 
 _DEFOR_KEYWORDS  = ("deforestation", "desmatamento", "desmat")
+_SECONDARY_VEGETATION_KEYWORDS = (
+    "vs",
+    "vegetacao secundaria",
+    "floresta secundaria",
+    "secondary vegetation",
+    "secondary forest",
+    "vegsec",
+)
 _RASTER_SUFFIXES = {".tif", ".tiff"}
 _AUX_KEYWORDS    = (
     "border", "boundary", "hydrography", "hydro", "indigenous",
@@ -142,17 +152,38 @@ _AUX_KEYWORDS    = (
 _DATA_SUFFIXES = {".parquet", ".tif", ".tiff"}
 
 
+def _searchable(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", normalized.lower()).strip()
+
+
+def _is_secondary_vegetation(parts: tuple[str, ...]) -> bool:
+    searchable = _searchable("/".join(parts))
+    tokens = set(searchable.split())
+    return any(
+        keyword == "vs" and "vs" in tokens
+        or keyword != "vs" and keyword in searchable
+        for keyword in _SECONDARY_VEGETATION_KEYWORDS
+    )
+
+
 def _classify(parts: tuple[str, ...]) -> str:
     path_low = "/".join(p.lower() for p in parts)
     if parts[-1].lower().endswith(tuple(_RASTER_SUFFIXES)):
         return "rasters"
+    if _is_secondary_vegetation(parts):
+        return "secondary_vegetation"
     if any(k in path_low for k in _DEFOR_KEYWORDS):
         return "deforestation"
     return "auxiliary"
 
 
 def _find_biome(parts: tuple[str, ...]) -> str | None:
-    return next((p for p in parts if p in _BIOME_NAMES), None)
+    for part in parts:
+        normalized = part.replace("_", " ")
+        if normalized in _BIOME_NAMES:
+            return normalized
+    return None
 
 # ---------------------------------------------------------------------------
 # File discovery: deduplicate, keep newest
@@ -160,7 +191,7 @@ def _find_biome(parts: tuple[str, ...]) -> str | None:
 
 def discover_files(root: Path) -> dict[tuple[str, str, str], Path]:
     """
-    Scan root for data files outside _organized/.
+    Scan root for data files, including files already under _organized/.
     Returns {(biome, data_type, filename): best_path} where 'best' = newest mtime.
     """
     best: dict[tuple[str, str, str], tuple[float, Path]] = {}
@@ -170,7 +201,6 @@ def discover_files(root: Path) -> dict[tuple[str, str, str], Path]:
             if (
                 not f.is_file()
                 or f.suffix.lower() not in _DATA_SUFFIXES
-                or "_organized" in f.parts
                 or f.name == "README.md"
                 or "_catalog" in f.name
             ):
@@ -220,7 +250,7 @@ def reorganize(root: Path, best: dict[tuple[str, str, str], Path]) -> Path:
                 dst.unlink()
                 shutil.move(str(src), dst)
             else:
-                src.unlink()   # dst is newer â€” drop the older duplicate
+                src.unlink()   # dst is newer — drop the older duplicate
         else:
             shutil.move(str(src), dst)
 
@@ -318,7 +348,7 @@ def write_readme(root: Path, organized: Path) -> Path:
         by_biome[r["biome"]].append(r)
 
     lines: list[str] = [
-        "# PRODES GeoParquet â€” File Catalog",
+        "# PRODES GeoParquet — File Catalog",
         "",
         f"Generated: {now}  ",
         f"Root: `_organized/`  ",
@@ -336,8 +366,8 @@ def write_readme(root: Path, organized: Path) -> Path:
         lines.append("|------|------|----------:|-----:|--------:|")
         for r in sorted(by_biome[biome], key=lambda x: x["path"]):
             path_link = f"`{r['path']}`"
-            rows_s    = f"{r['rows']:,}" if r["rows"] is not None else "â€”"
-            cols_s    = str(r["cols"])   if r["cols"] is not None else "â€”"
+            rows_s    = f"{r['rows']:,}" if r["rows"] is not None else "—"
+            cols_s    = str(r["cols"])   if r["cols"] is not None else "—"
             lines.append(
                 f"| {path_link} | {r['type']} "
                 f"| {r['size_mb']:.1f} | {rows_s} | {cols_s} |"
@@ -349,8 +379,8 @@ def write_readme(root: Path, organized: Path) -> Path:
         "",
         "**Sources**",
         "",
-        "- INPE/PRODES â€” Sistema de Monitoramento do Desmatamento na AmazÃ´nia Brasileira",
-        "- TerraBrasilis â€” https://terrabrasilis.dpi.inpe.br",
+        "- INPE/PRODES — Sistema de Monitoramento do Desmatamento na Amazônia Brasileira",
+        "- TerraBrasilis — https://terrabrasilis.dpi.inpe.br",
         "",
         f"*Generated by `05_organize_geoparquet.py` v{__version__}*",
     ]

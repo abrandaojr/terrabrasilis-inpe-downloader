@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ANALYSIS_BASE_YEAR = 2008
+DATA_YEAR_MIN = 2000
+DATA_YEAR_MAX = 2030
 
 
 def _env_path(name: str, default: Path) -> Path:

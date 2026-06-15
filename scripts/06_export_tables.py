@@ -1,7 +1,7 @@
-﻿"""
+"""
 06_export_tables.py
 ===================
-Senior Environmental Data Science Analytics Pipeline â€” v2.0
+Senior Environmental Data Science Analytics Pipeline — v2.0
 
 Spatial-Temporal Dynamics of Natural Vegetation Suppression
 and Secondary Succession Trends in Brazilian Biomes
@@ -12,37 +12,37 @@ All parameters are computed exclusively from primary GeoParquet files
 produced by scripts 02 and 05, via DuckDB SQL engines. No external
 datasets are used.
 
-Let P = {páµ¢} be the universe of suppression polygons with attributes
-(t=year, s=state, m=municipality, c=class, Î±=area_km2), and
-V = {vâ±¼} the universe of secondary vegetation polygons with additional
-attribute Î´=age_class.
+Let P = {pᵢ} be the universe of suppression polygons with attributes
+(t=year, s=state, m=municipality, c=class, α=area_km2), and
+V = {vⱼ} the universe of secondary vegetation polygons with additional
+attribute δ=age_class.
 
 P1  Annual Suppression Series
-    S(t,s,m) = Î£_{p: t,s,m} Î±_p        [GROUP BY year, state, muni]
+    S(t,s,m) = Σ_{p: t,s,m} α_p        [GROUP BY year, state, muni]
 
 P2  Cumulative Suppression
-    C(t,s,m) = Î£_{Ï„â‰¤t} S(Ï„,s,m)        [SUM() OVER (PARTITION BY s,m ORDER BY t)]
+    C(t,s,m) = Σ_{τ≤t} S(τ,s,m)        [SUM() OVER (PARTITION BY s,m ORDER BY t)]
 
-P3  Natural Vegetation Remaining â€” Parameter A  (stock estimate)
-    NV_A(t)  = Ã‚â‚€ âˆ’ C(t)               [Ã‚â‚€ = class-aggregate at tâ‚€]
+P3  Natural Vegetation Remaining — Parameter A  (stock estimate)
+    NV_A(t)  = A₀ − C(t)               [A₀ = class-aggregate at t₀]
 
-P4  Natural Vegetation â€” Parameter B  (class partition)
-    NV_B(t,c) = Î£_{p: t,c} Î±_p         [GROUP BY year, classname]
+P4  Natural Vegetation — Parameter B  (class partition)
+    NV_B(t,c) = Σ_{p: t,c} α_p         [GROUP BY year, classname]
 
 P5  Secondary Vegetation Annual Extent
-    VS(t,s)  = Î£_{v: t,s} Î±_v           [GROUP BY year, state]
+    VS(t,s)  = Σ_{v: t,s} α_v           [GROUP BY year, state]
 
 P6  Net Annual Increment of Secondary Vegetation
-    Î”VS(t,s) = VS(t,s) âˆ’ VS(tâˆ’1,s)     [LAG() window function]
+    ΔVS(t,s) = VS(t,s) − VS(t−1,s)     [LAG() window function]
 
-P7  SV Parameter A â€” Age-Class Partition
-    VS_A(t,Î´) = Î£_{v: t,Î´} Î±_v         [Î´ âˆˆ {young, intermediate, mature}]
+P7  SV Parameter A — Age-Class Partition
+    VS_A(t,δ) = Σ_{v: t,δ} α_v         [δ ∈ {young, intermediate, mature}]
 
-P8  SV Parameter B â€” Land-Use-History Partition
-    VS_B(t,h) = Î£_{v: t,h} Î±_v         [h from classname / land-use field]
+P8  SV Parameter B — Land-Use-History Partition
+    VS_B(t,h) = Σ_{v: t,h} α_v         [h from classname / land-use field]
 
 P9  Administrative Cross-Tabulation
-    For all k âˆˆ {P1..P8}: X_k(t,s,m) at municipality and state level
+    For all k ∈ {P1..P8}: X_k(t,s,m) at municipality and state level
 
 OUTPUTS
 -------
@@ -61,8 +61,8 @@ OUTPUTS
 
 Author
 ------
-Amintas BrandÃ£o Jr. <abrandaojr@gmail.com>
-Imazon â€” Instituto do Homem e Meio Ambiente da AmazÃ´nia
+Amintas Brandão Jr. <abrandaojr@gmail.com>
+Imazon — Instituto do Homem e Meio Ambiente da Amazônia
 
 License
 -------
@@ -76,8 +76,10 @@ __all__: list[str] = []
 
 import importlib.util
 import io
+import re
 import subprocess
 import sys
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +92,10 @@ from typing import NamedTuple
 HERE = Path(__file__).parent
 
 from prodes_pipeline.config import (  # noqa: E402
+    ANALYSIS_BASE_YEAR,
+    DATA_YEAR_MAX,
+    DATA_YEAR_MIN,
+    FIGURES_DIR,
     GEOPARQUET_DIR,
     REPORTS_DIR,
     TABLES_DIR,
@@ -97,7 +103,7 @@ from prodes_pipeline.config import (  # noqa: E402
 )
 
 GPQ_DIR = GEOPARQUET_DIR
-CHART_DIR = TABLES_DIR / "charts"
+CHART_DIR = FIGURES_DIR
 
 # ============================================================================
 # DEPENDENCY BOOTSTRAP
@@ -187,113 +193,115 @@ CONFIG: dict[str, object] = {
 }
 
 # ============================================================================
-# BILINGUAL COPY  (zero language mixing â€” every string fully localized)
+# BILINGUAL COPY  (zero language mixing — every string fully localized)
 # ============================================================================
 
 T: dict[str, dict[str, str]] = {
-    # â”€â”€ Section labels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Section labels ─────────────────────────────────────────────────────
     "title_suppression": {
-        "pt": "SÃ©rie HistÃ³rica de SupressÃ£o de VegetaÃ§Ã£o Nativa",
+        "pt": "Série Histórica de Supressão de Vegetação Nativa",
         "en": "Historical Series of Natural Vegetation Suppression",
     },
     "title_cumulative": {
-        "pt": "SupressÃ£o Acumulada de VegetaÃ§Ã£o Nativa",
+        "pt": "Supressão Acumulada de Vegetação Nativa",
         "en": "Cumulative Natural Vegetation Suppression",
     },
     "title_nv_a": {
-        "pt": "VegetaÃ§Ã£o Nativa Remanescente â€” ParÃ¢metro A",
-        "en": "Remaining Natural Vegetation â€” Parameter A",
+        "pt": "Vegetação Nativa Remanescente — Parâmetro A",
+        "en": "Remaining Natural Vegetation — Parameter A",
     },
     "title_nv_b": {
-        "pt": "VegetaÃ§Ã£o Nativa por Classe â€” ParÃ¢metro B",
-        "en": "Natural Vegetation by Class â€” Parameter B",
+        "pt": "Vegetação Nativa por Classe — Parâmetro B",
+        "en": "Natural Vegetation by Class — Parameter B",
     },
     "title_sv_extent": {
-        "pt": "ExtensÃ£o Espacial Anual da VegetaÃ§Ã£o SecundÃ¡ria",
+        "pt": "Extensão Espacial Anual da Vegetação Secundária",
         "en": "Annual Spatial Extent of Secondary Vegetation",
     },
     "title_sv_increment": {
-        "pt": "Incremento LÃ­quido Anual de VegetaÃ§Ã£o SecundÃ¡ria",
+        "pt": "Incremento Líquido Anual de Vegetação Secundária",
         "en": "Annual Net Increment of Secondary Vegetation",
     },
     "title_sv_a": {
-        "pt": "VegetaÃ§Ã£o SecundÃ¡ria por Classe de Idade â€” ParÃ¢metro A",
-        "en": "Secondary Vegetation by Age Class â€” Parameter A",
+        "pt": "Vegetação Secundária por Classe de Idade — Parâmetro A",
+        "en": "Secondary Vegetation by Age Class — Parameter A",
     },
     "title_sv_b": {
-        "pt": "VegetaÃ§Ã£o SecundÃ¡ria por HistÃ³rico de Uso â€” ParÃ¢metro B",
-        "en": "Secondary Vegetation by Land-Use History â€” Parameter B",
+        "pt": "Vegetação Secundária por Histórico de Uso — Parâmetro B",
+        "en": "Secondary Vegetation by Land-Use History — Parameter B",
     },
     "title_muni": {
-        "pt": "Matriz MunicÃ­pio Ã— Estado â€” Todos os ParÃ¢metros",
-        "en": "Municipality Ã— State Matrix â€” All Parameters",
+        "pt": "Matriz Município × Estado — Todos os Parâmetros",
+        "en": "Municipality × State Matrix — All Parameters",
     },
     "title_methodology": {
-        "pt": "Notas MetodolÃ³gicas",
+        "pt": "Notas Metodológicas",
         "en": "Methodological Notes",
     },
-    # â”€â”€ Column headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Column headers ──────────────────────────────────────────────────────
     "col_year":         {"pt": "Ano",              "en": "Year"},
     "col_state":        {"pt": "Estado",           "en": "State"},
-    "col_muni":         {"pt": "MunicÃ­pio",        "en": "Municipality"},
+    "col_muni":         {"pt": "Município",        "en": "Municipality"},
     "col_class":        {"pt": "Classe",           "en": "Class"},
     "col_age_class":    {"pt": "Classe de Idade",  "en": "Age Class"},
-    "col_suppression":  {"pt": "SupressÃ£o (kmÂ²)",  "en": "Suppression (kmÂ²)"},
-    "col_cumulative":   {"pt": "Acumulado (kmÂ²)",  "en": "Cumulative (kmÂ²)"},
-    "col_nv_remaining": {"pt": "VN Remanescente (kmÂ²)", "en": "NV Remaining (kmÂ²)"},
+    "col_suppression":  {"pt": "Supressão (km²)",  "en": "Suppression (km²)"},
+    "col_cumulative":   {"pt": "Acumulado (km²)",  "en": "Cumulative (km²)"},
+    "col_nv_remaining": {"pt": "VN Remanescente (km²)", "en": "NV Remaining (km²)"},
     "col_nv_pct":       {"pt": "VN Remanescente (%)",   "en": "NV Remaining (%)"},
-    "col_sv_extent":    {"pt": "VS ExtensÃ£o (kmÂ²)", "en": "SV Extent (kmÂ²)"},
-    "col_sv_increment": {"pt": "VS Incremento (kmÂ²)", "en": "SV Increment (kmÂ²)"},
-    "col_sv_area":      {"pt": "Ãrea VS (kmÂ²)",    "en": "SV Area (kmÂ²)"},
+    "col_sv_extent":    {"pt": "VS Extensão (km²)", "en": "SV Extent (km²)"},
+    "col_sv_increment": {"pt": "VS Incremento (km²)", "en": "SV Increment (km²)"},
+    "col_sv_area":      {"pt": "Área VS (km²)",    "en": "SV Area (km²)"},
     "col_pct_total":    {"pt": "% do Total",        "en": "% of Total"},
-    "col_yoy":          {"pt": "VariaÃ§Ã£o Anual (%)", "en": "Annual Change (%)"},
-    # â”€â”€ Age class labels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    "age_young":        {"pt": "Jovem (0â€“5 anos)",         "en": "Young (0â€“5 yr)"},
-    "age_intermediate": {"pt": "IntermediÃ¡ria (5â€“15 anos)", "en": "Intermediate (5â€“15 yr)"},
-    "age_mature":       {"pt": "Madura (â‰¥15 anos)",        "en": "Mature (â‰¥15 yr)"},
-    # â”€â”€ Chart axis labels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "col_yoy":          {"pt": "Variação Anual (%)", "en": "Annual Change (%)"},
+    # ── Age class labels ────────────────────────────────────────────────────
+    "age_young":        {"pt": "Jovem (0–5 anos)",         "en": "Young (0–5 yr)"},
+    "age_intermediate": {"pt": "Intermediária (5–15 anos)", "en": "Intermediate (5–15 yr)"},
+    "age_mature":       {"pt": "Madura (≥15 anos)",        "en": "Mature (≥15 yr)"},
+    # ── Chart axis labels ───────────────────────────────────────────────────
     "ax_year":       {"pt": "Ano",                         "en": "Year"},
-    "ax_km2":        {"pt": "Ãrea (kmÂ²)",                  "en": "Area (kmÂ²)"},
-    "ax_delta_km2":  {"pt": "Incremento LÃ­quido (kmÂ²)",    "en": "Net Increment (kmÂ²)"},
-    "ax_cum_km2":    {"pt": "SupressÃ£o Acumulada (kmÂ²)",   "en": "Cumulative Suppression (kmÂ²)"},
+    "ax_km2":        {"pt": "Área (km²)",                  "en": "Area (km²)"},
+    "ax_delta_km2":  {"pt": "Incremento Líquido (km²)",    "en": "Net Increment (km²)"},
+    "ax_cum_km2":    {"pt": "Supressão Acumulada (km²)",   "en": "Cumulative Suppression (km²)"},
     "ax_state":      {"pt": "Estado",                      "en": "State"},
-    # â”€â”€ Source strings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Source strings ──────────────────────────────────────────────────────
     "src_prodes": {
         "pt": "Fonte: INPE/PRODES. Calculado on-the-fly a partir dos dados GeoParquet.",
         "en": "Source: INPE/PRODES. Computed on-the-fly from primary GeoParquet files.",
     },
     "src_vs": {
-        "pt": "Fonte: INPE/PRODES â€” VegetaÃ§Ã£o SecundÃ¡ria. Calculado a partir dos dados GeoParquet.",
-        "en": "Source: INPE/PRODES â€” Secondary Vegetation. Computed from GeoParquet data.",
+        "pt": "Fonte: INPE/PRODES — Vegetação Secundária. Calculado a partir dos dados GeoParquet.",
+        "en": "Source: INPE/PRODES — Secondary Vegetation. Computed from GeoParquet data.",
     },
-    # â”€â”€ PPTX text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── PPTX text ───────────────────────────────────────────────────────────
     "pptx_lang_label": {"pt": "PT-BR", "en": "EN-US"},
     "pptx_subtitle": {
-        "pt": "DinÃ¢mica EspaÃ§o-Temporal da SupressÃ£o de VegetaÃ§Ã£o Nativa\ne TendÃªncias de SucessÃ£o SecundÃ¡ria em Biomas Brasileiros",
+        "pt": "Dinâmica Espaço-Temporal da Supressão de Vegetação Nativa\ne Tendências de Sucessão Secundária em Biomas Brasileiros",
         "en": "Spatial-Temporal Dynamics of Natural Vegetation Suppression\nand Secondary Succession Trends in Brazilian Biomes",
     },
     "pptx_credit": {
-        "pt": "INPE/PRODES Â· MapBiomas Â· Imazon",
-        "en": "INPE/PRODES Â· MapBiomas Â· Imazon",
+        "pt": "INPE/PRODES · MapBiomas · Imazon",
+        "en": "INPE/PRODES · MapBiomas · Imazon",
     },
     "pptx_method_title": {
-        "pt": "Notas MetodolÃ³gicas",
+        "pt": "Notas Metodológicas",
         "en": "Methodological Notes",
     },
     "pptx_method_body": {
         "pt": (
-            "â€¢ SupressÃ£o: detecÃ§Ã£o por corte raso em imagem Ã³ptica (PRODES)\n"
-            "â€¢ VegetaÃ§Ã£o secundÃ¡ria: mapeamento anual por sensoriamento remoto\n"
-            "â€¢ Unidade espacial: municÃ­pio/estado (IBGE)\n"
-            "â€¢ Unidade de Ã¡rea: kmÂ² (SIRGAS 2000)\n"
-            "â€¢ PerÃ­odo: dados disponÃ­veis nos arquivos GeoParquet"
+            "• Supressão: detecção por corte raso em imagem óptica (PRODES)\n"
+            "• Vegetação secundária: mapeamento anual por sensoriamento remoto\n"
+            "• Unidade espacial: município/estado (IBGE)\n"
+            "• Unidade de área: km² (SIRGAS 2000)\n"
+            f"• Ano-base analítico: {ANALYSIS_BASE_YEAR}\n"
+            "• Anos anteriores: contexto ilustrativo"
         ),
         "en": (
-            "â€¢ Suppression: clear-cut detection via optical imagery (PRODES)\n"
-            "â€¢ Secondary vegetation: annual mapping by remote sensing\n"
-            "â€¢ Spatial unit: municipality/state (IBGE)\n"
-            "â€¢ Area unit: kmÂ² (SIRGAS 2000)\n"
-            "â€¢ Period: data available in GeoParquet files"
+            "• Suppression: clear-cut detection via optical imagery (PRODES)\n"
+            "• Secondary vegetation: annual mapping by remote sensing\n"
+            "• Spatial unit: municipality/state (IBGE)\n"
+            "• Area unit: km² (SIRGAS 2000)\n"
+            f"• Analytical base year: {ANALYSIS_BASE_YEAR}\n"
+            "• Earlier years: illustrative context"
         ),
     },
 }
@@ -304,11 +312,11 @@ def _t(key: str, lang: str) -> str:
     return T.get(key, {}).get(lang, key)
 
 # ============================================================================
-# EXCEL PALETTE  (The Economist Ã— Academic Journal)
+# EXCEL PALETTE  (The Economist × Academic Journal)
 # ============================================================================
 
-_C_NAVY   = "1B3A4B"   # dark navy    â€” primary header
-_C_FOREST = "2E7D32"   # forest green â€” secondary header
+_C_NAVY   = "1B3A4B"   # dark navy    — primary header
+_C_FOREST = "2E7D32"   # forest green — secondary header
 _C_WHITE  = "FFFFFF"
 _C_ALT    = "F4F6F8"   # off-white alternating rows
 _C_DARK   = "111111"
@@ -447,9 +455,9 @@ def _probe(files: list[Path], candidates: tuple[str, ...]) -> str | None:
 def _infer_km2_factor(files: list[Path], area_col: str) -> float:
     """
     Detect area unit from value magnitude:
-      >500,000 â†’ mÂ²  (Ã·1e6)
-      >5,000   â†’ ha  (Ã·100)
-      else     â†’ kmÂ²  (Ã—1)
+      >500,000 → m²  (÷1e6)
+      >5,000   → ha  (÷100)
+      else     → km²  (×1)
     """
     sample: list[float] = []
     for f in files[:3]:
@@ -470,9 +478,39 @@ def _infer_km2_factor(files: list[Path], area_col: str) -> float:
 _BIOME_NAMES  = {"Amazon Biome", "Legal Amazon", "Cerrado", "Caatinga",
                  "Pantanal", "Mata Atlantica", "Pampa"}
 _DEFOR_KW     = ("deforestation", "desmatamento", "desmat")
-_VS_KW        = ("vs_", "vegetacao_secundaria", "secondary_vegetation", "vegsec")
+_VS_KW        = (
+    "vs",
+    "vegetacao secundaria",
+    "floresta secundaria",
+    "secondary vegetation",
+    "secondary forest",
+    "vegsec",
+)
 _AUX_SKIP     = ("border", "boundary", "hydrography", "indigenous",
                  "conservation_units", "settlement")
+
+
+def _searchable(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", normalized.lower()).strip()
+
+
+def _is_vs_path(parts: tuple[str, ...]) -> bool:
+    searchable = _searchable("/".join(parts))
+    tokens = set(searchable.split())
+    return any(
+        keyword == "vs" and "vs" in tokens
+        or keyword != "vs" and keyword in searchable
+        for keyword in _VS_KW
+    )
+
+
+def _find_biome(parts: tuple[str, ...]) -> str | None:
+    for part in parts:
+        normalized = part.replace("_", " ")
+        if normalized in _BIOME_NAMES:
+            return normalized
+    return None
 
 
 def _discover_suppression(gpq_dir: Path) -> dict[str, list[Path]]:
@@ -488,9 +526,11 @@ def _discover_suppression(gpq_dir: Path) -> dict[str, list[Path]]:
             path_low = "/".join(p.lower() for p in parts)
             if not any(k in path_low for k in _DEFOR_KW):
                 continue
+            if _is_vs_path(parts):
+                continue
             if any(k in path_low for k in _AUX_SKIP):
                 continue
-            biome = next((p for p in parts if p in _BIOME_NAMES), None)
+            biome = _find_biome(parts)
             if biome:
                 biome_files.setdefault(biome, []).append(pf)
         except (ValueError, IndexError):
@@ -501,21 +541,19 @@ def _discover_suppression(gpq_dir: Path) -> dict[str, list[Path]]:
 def _discover_vs(gpq_dir: Path) -> list[Path]:
     """
     Discover secondary vegetation parquets (VS files).
-    Matches files with 'vs_' prefix or 'vegetacao_secundaria' in path.
+    Matches VS, floresta_secundaria, vegetacao_secundaria, and English variants.
     """
     files: list[Path] = []
     for pf in sorted(gpq_dir.rglob("*.parquet")):
         try:
-            name_low = pf.name.lower()
-            path_low = str(pf).lower().replace("\\", "/")
-            if any(k in name_low or k in path_low for k in _VS_KW):
+            if _is_vs_path(pf.parts):
                 files.append(pf)
         except Exception:
             pass
     return files
 
 # ============================================================================
-# DUCKDB QUERY LAYER  (P1 â€“ P9)
+# DUCKDB QUERY LAYER  (P1 – P9)
 # ============================================================================
 
 class SchemaMap(NamedTuple):
@@ -565,13 +603,24 @@ def _tuple_sort_key(row: tuple) -> tuple:
     return tuple((v is None, "" if v is None else v) for v in row)
 
 
-# â”€â”€ P1  Annual Suppression Series â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _rows_from_year(rows: list[tuple], min_year: int = ANALYSIS_BASE_YEAR) -> list[tuple]:
+    """Return rows whose first column is an analytical year."""
+    return [r for r in rows if r and int(r[0]) >= min_year]
+
+
+def _scope_label(year: int, lang: str) -> str:
+    if year < ANALYSIS_BASE_YEAR:
+        return "Contexto pré-2008" if lang == "pt" else "Pre-2008 context"
+    return "Analítico" if lang == "pt" else "Analytical"
+
+
+# ── P1  Annual Suppression Series ──────────────────────────────────────────
 
 def p1_suppression_series(
     files: list[Path], sm: SchemaMap
 ) -> list[tuple]:
     """
-    P1: S(t, s, m) = Î£_{p: year=t, state=s, muni=m} area_p
+    P1: S(t, s, m) = Σ_{p: year=t, state=s, muni=m} area_p
 
     Returns rows of (year, state, municipality, suppression_km2).
     If administrative columns absent, returns (year, suppression_km2).
@@ -589,7 +638,7 @@ def p1_suppression_series(
 
     where = f'WHERE "{sm.area}" IS NOT NULL AND CAST("{sm.area}" AS DOUBLE) > 0'
     if sm.year:
-        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030'
+        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN {DATA_YEAR_MIN} AND {DATA_YEAR_MAX}'
 
     sql = f"""
         SELECT {", ".join(sel)}
@@ -601,11 +650,11 @@ def p1_suppression_series(
     return _run(sql, "P1 suppression_series")
 
 
-# â”€â”€ P2  Cumulative Suppression â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P2  Cumulative Suppression ──────────────────────────────────────────────
 
 def p2_cumulative(p1_rows: list[tuple]) -> list[tuple]:
     """
-    P2: C(t,s,m) = Î£_{Ï„â‰¤t} S(Ï„,s,m)
+    P2: C(t,s,m) = Σ_{τ≤t} S(τ,s,m)
 
     Built from P1 results using a running sum window.
     Returns rows of (year, [state, [muni,]] suppression_km2, cumulative_km2).
@@ -634,13 +683,13 @@ def p2_cumulative(p1_rows: list[tuple]) -> list[tuple]:
     return sorted(result, key=_tuple_sort_key)
 
 
-# â”€â”€ P3  Natural Vegetation Parameter A (stock estimate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P3  Natural Vegetation Parameter A (stock estimate) ────────────────────
 
 def p3_nv_remaining(p2_rows: list[tuple]) -> list[tuple]:
     """
-    P3: NV_A(t) = Ã‚â‚€ âˆ’ C(t)
+    P3: NV_A(t) = A₀ − C(t)
 
-    Ã‚â‚€ is estimated as the maximum cumulative value across all units
+    A₀ is estimated as the maximum cumulative value across all units
     (proxy for total suppressed forest at end of record) plus a 10%
     residual buffer representing the undetected suppression prior to
     the monitoring period.
@@ -663,13 +712,13 @@ def p3_nv_remaining(p2_rows: list[tuple]) -> list[tuple]:
     return sorted(result, key=_tuple_sort_key)
 
 
-# â”€â”€ P4  Natural Vegetation Parameter B (class partition) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P4  Natural Vegetation Parameter B (class partition) ───────────────────
 
 def p4_nv_by_class(
     files: list[Path], sm: SchemaMap
 ) -> list[tuple]:
     """
-    P4: NV_B(t, c) = Î£_{p: year=t, class=c} area_p
+    P4: NV_B(t, c) = Σ_{p: year=t, class=c} area_p
 
     Returns rows of (year, class, suppression_km2, pct_of_year_total).
     """
@@ -686,7 +735,7 @@ def p4_nv_by_class(
             FROM read_parquet({paths})
             WHERE "{sm.area}" IS NOT NULL
               AND CAST("{sm.area}" AS DOUBLE) > 0
-              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}
             GROUP BY year, vegetation_class
         ),
         totals AS (
@@ -704,13 +753,13 @@ def p4_nv_by_class(
     return _run(sql, "P4 nv_by_class")
 
 
-# â”€â”€ P5  Secondary Vegetation Annual Extent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P5  Secondary Vegetation Annual Extent ─────────────────────────────────
 
 def p5_sv_extent(
     files: list[Path], sm: SchemaMap
 ) -> list[tuple]:
     """
-    P5: VS(t, s) = Î£_{v: year=t, state=s} area_v
+    P5: VS(t, s) = Σ_{v: year=t, state=s} area_v
 
     Returns rows of (year, [state,] sv_extent_km2).
     """
@@ -726,7 +775,7 @@ def p5_sv_extent(
 
     where = f'WHERE "{sm.area}" IS NOT NULL AND CAST("{sm.area}" AS DOUBLE) > 0'
     if sm.year:
-        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030'
+        where += f' AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}'
 
     sql = f"""
         SELECT {", ".join(sel)}
@@ -738,11 +787,11 @@ def p5_sv_extent(
     return _run(sql, "P5 sv_extent")
 
 
-# â”€â”€ P6  Annual Net Increment of Secondary Vegetation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P6  Annual Net Increment of Secondary Vegetation ───────────────────────
 
 def p6_sv_increment(p5_rows: list[tuple]) -> list[tuple]:
     """
-    P6: Î”VS(t, s) = VS(t, s) âˆ’ VS(tâˆ’1, s)
+    P6: ΔVS(t, s) = VS(t, s) − VS(t−1, s)
 
     Computed via LAG applied to P5 results.
     Returns rows with additional column: net_increment_km2.
@@ -768,14 +817,14 @@ def p6_sv_increment(p5_rows: list[tuple]) -> list[tuple]:
     return sorted(result, key=_tuple_sort_key)
 
 
-# â”€â”€ P7  SV Parameter A â€” Age-Class Partition â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P7  SV Parameter A — Age-Class Partition ───────────────────────────────
 
 def p7_sv_by_age_class(
     files: list[Path], sm: SchemaMap, lang: str = "en"
 ) -> list[tuple]:
     """
-    P7: VS_A(t, Î´) = Î£_{v: year=t, Î´_v=Î´} area_v
-        Î´ âˆˆ {Young: 0â€“5yr, Intermediate: 5â€“15yr, Mature: â‰¥15yr}
+    P7: VS_A(t, δ) = Σ_{v: year=t, δ_v=δ} area_v
+        δ ∈ {Young: 0–5yr, Intermediate: 5–15yr, Mature: ≥15yr}
 
     If an explicit age column is present, uses it; otherwise falls back
     to classname-based heuristic parsing.
@@ -801,7 +850,7 @@ def p7_sv_by_age_class(
             WHERE "{sm.area}" IS NOT NULL
               AND CAST("{sm.area}" AS DOUBLE) > 0
               AND "{sm.age}" IS NOT NULL
-              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}
             GROUP BY year, age_class
             ORDER BY year, age_class
         """
@@ -822,7 +871,7 @@ def p7_sv_by_age_class(
             FROM read_parquet({paths})
             WHERE "{sm.area}" IS NOT NULL
               AND CAST("{sm.area}" AS DOUBLE) > 0
-              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}
             GROUP BY year, age_class
             ORDER BY year, age_class
         """
@@ -832,13 +881,13 @@ def p7_sv_by_age_class(
     return _run(sql, "P7 sv_age_class")
 
 
-# â”€â”€ P8  SV Parameter B â€” Land-Use History Partition â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P8  SV Parameter B — Land-Use History Partition ────────────────────────
 
 def p8_sv_by_land_use(
     files: list[Path], sm: SchemaMap
 ) -> list[tuple]:
     """
-    P8: VS_B(t, h) = Î£_{v: year=t, history=h} area_v
+    P8: VS_B(t, h) = Σ_{v: year=t, history=h} area_v
 
     Uses classname or class field as land-use history proxy.
     Returns rows of (year, land_use_class, sv_area_km2, pct_of_year).
@@ -856,7 +905,7 @@ def p8_sv_by_land_use(
             FROM read_parquet({paths})
             WHERE "{sm.area}" IS NOT NULL
               AND CAST("{sm.area}" AS DOUBLE) > 0
-              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}
             GROUP BY year, land_use_class
         ),
         totals AS (SELECT year, SUM(km2) AS yr_total FROM by_class GROUP BY year)
@@ -871,7 +920,7 @@ def p8_sv_by_land_use(
     return _run(sql, "P8 sv_land_use")
 
 
-# â”€â”€ P9  Municipality Ã— State Cross-Tabulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── P9  Municipality × State Cross-Tabulation ──────────────────────────────
 
 def p9_muni_state_matrix(
     files: list[Path], sm: SchemaMap, param_label: str
@@ -879,7 +928,7 @@ def p9_muni_state_matrix(
     """
     P9: X_k(t, s, m) for parameter k
 
-    Computes all parameters at municipalityâ€“state granularity.
+    Computes all parameters at municipality–state granularity.
     Returns rows of (year, state, municipality, suppression_km2,
                      cumulative_km2, pct_state, pct_national).
     """
@@ -897,7 +946,7 @@ def p9_muni_state_matrix(
             FROM read_parquet({paths})
             WHERE "{sm.area}" IS NOT NULL
               AND CAST("{sm.area}" AS DOUBLE) > 0
-              AND CAST("{sm.year}" AS INTEGER) BETWEEN 2000 AND 2030
+              AND CAST("{sm.year}" AS INTEGER) BETWEEN {ANALYSIS_BASE_YEAR} AND {DATA_YEAR_MAX}
               AND "{sm.state}" IS NOT NULL
               AND "{sm.muni}" IS NOT NULL
             GROUP BY year, state, municipality
@@ -949,10 +998,12 @@ def _ws_p1(wb: Workbook, lang: str, rows: list[tuple]) -> None:
         headers = [_t("col_year", lang), _t("col_state", lang), _t("col_suppression", lang)]
     else:
         headers = [_t("col_year", lang), _t("col_suppression", lang)]
+    headers = headers + (["Escopo"] if lang == "pt" else ["Scope"])
 
     _hdr(ws, 2, headers)
     for i, r in enumerate(rows, 3):
-        _row(ws, i, list(r))
+        year = int(r[0])
+        _row(ws, i, list(r) + [_scope_label(year, lang)])
     _src(ws, len(rows) + 4, _t("src_prodes", lang))
     _widths(ws, {j + 1: 18 for j in range(len(headers))})
 
@@ -1096,53 +1147,61 @@ def _ws_methodology(wb: Workbook, lang: str) -> None:
 
     notes = {
         "pt": [
-            ("P1 â€” SÃ©rie de SupressÃ£o Anual",
-             "S(t,s,m) = Î£ area dos polÃ­gonos de supressÃ£o para o ano t, "
-             "estado s e municÃ­pio m. Unidade: kmÂ². Fonte: INPE/PRODES."),
-            ("P2 â€” SupressÃ£o Acumulada",
-             "C(t,s,m) = Î£_{Ï„â‰¤t} S(Ï„,s,m). Calculada via funÃ§Ã£o de janela SQL "
-             "(SUM OVER PARTITION BY estado, municÃ­pio ORDER BY ano)."),
-            ("P3 â€” VegetaÃ§Ã£o Nativa Remanescente (A)",
-             "NV_A(t) = Ã‚â‚€ âˆ’ C(t), onde Ã‚â‚€ = C(t_max)Ã—1,10 Ã© o estimador "
-             "do estoque florestal no inÃ­cio do perÃ­odo monitorado."),
-            ("P4 â€” VegetaÃ§Ã£o Nativa por Classe (B)",
-             "PartiÃ§Ã£o de S(t) pela classe de uso/cobertura detectada."),
-            ("P5 â€” ExtensÃ£o Anual de VegetaÃ§Ã£o SecundÃ¡ria",
-             "VS(t,s) = Î£ Ã¡rea dos polÃ­gonos de VS para o ano t e estado s."),
-            ("P6 â€” Incremento LÃ­quido Anual de VS",
-             "Î”VS(t,s) = VS(t,s) âˆ’ VS(tâˆ’1,s). Positivo = recuperaÃ§Ã£o lÃ­quida."),
-            ("P7 â€” VS por Classe de Idade (A)",
-             "PartiÃ§Ã£o por idade: Jovem (<5yr), IntermediÃ¡ria (5â€“15yr), Madura (â‰¥15yr)."),
-            ("P8 â€” VS por HistÃ³rico de Uso (B)",
-             "PartiÃ§Ã£o por classe/histÃ³rico de uso disponÃ­vel no atributo 'classname'."),
-            ("P9 â€” Matriz MunicÃ­pio Ã— Estado",
-             "Todos os parÃ¢metros calculados na escala municipal e "
-             "agregados ao nÃ­vel estadual. Inclui % do total estadual e nacional."),
+            ("Escopo analítico",
+             f"Todas as estatísticas, acumulados, rankings e conclusões usam "
+             f"{ANALYSIS_BASE_YEAR} como ano-base. Anos anteriores aparecem "
+             "somente como contexto ilustrativo na série P1."),
+            ("P1 — Série de Supressão Anual",
+             "S(t,s,m) = Σ area dos polígonos de supressão para o ano t, "
+             "estado s e município m. Unidade: km². Fonte: INPE/PRODES."),
+            ("P2 — Supressão Acumulada",
+             "C(t,s,m) = Σ_{τ≤t} S(τ,s,m). Calculada via função de janela SQL "
+             "(SUM OVER PARTITION BY estado, município ORDER BY ano)."),
+            ("P3 — Vegetação Nativa Remanescente (A)",
+             "NV_A(t) = A₀ − C(t), onde A₀ = C(t_max)×1,10 é o estimador "
+             "do estoque florestal no início do período monitorado."),
+            ("P4 — Vegetação Nativa por Classe (B)",
+             "Partição de S(t) pela classe de uso/cobertura detectada."),
+            ("P5 — Extensão Anual de Vegetação Secundária",
+             "VS(t,s) = Σ área dos polígonos de VS para o ano t e estado s."),
+            ("P6 — Incremento Líquido Anual de VS",
+             "ΔVS(t,s) = VS(t,s) − VS(t−1,s). Positivo = recuperação líquida."),
+            ("P7 — VS por Classe de Idade (A)",
+             "Partição por idade: Jovem (<5yr), Intermediária (5–15yr), Madura (≥15yr)."),
+            ("P8 — VS por Histórico de Uso (B)",
+             "Partição por classe/histórico de uso disponível no atributo 'classname'."),
+            ("P9 — Matriz Município × Estado",
+             "Todos os parâmetros calculados na escala municipal e "
+             "agregados ao nível estadual. Inclui % do total estadual e nacional."),
             ("Dados",
-             f"Computado on-the-fly a partir dos GeoParquets primÃ¡rios. "
+             f"Computado on-the-fly a partir dos GeoParquets primários. "
              f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
         ],
         "en": [
-            ("P1 â€” Annual Suppression Series",
-             "S(t,s,m) = Î£ area of suppression polygons for year t, state s, "
-             "municipality m. Unit: kmÂ². Source: INPE/PRODES."),
-            ("P2 â€” Cumulative Suppression",
-             "C(t,s,m) = Î£_{Ï„â‰¤t} S(Ï„,s,m). Computed via SQL window function "
+            ("Analytical scope",
+             f"All statistics, cumulative metrics, rankings, and conclusions use "
+             f"{ANALYSIS_BASE_YEAR} as the analytical base year. Earlier years "
+             "appear only as illustrative context in the P1 series."),
+            ("P1 — Annual Suppression Series",
+             "S(t,s,m) = Σ area of suppression polygons for year t, state s, "
+             "municipality m. Unit: km². Source: INPE/PRODES."),
+            ("P2 — Cumulative Suppression",
+             "C(t,s,m) = Σ_{τ≤t} S(τ,s,m). Computed via SQL window function "
              "(SUM OVER PARTITION BY state, municipality ORDER BY year)."),
-            ("P3 â€” Remaining Natural Vegetation (A)",
-             "NV_A(t) = Ã‚â‚€ âˆ’ C(t), where Ã‚â‚€ = C(t_max)Ã—1.10 is the "
+            ("P3 — Remaining Natural Vegetation (A)",
+             "NV_A(t) = A₀ − C(t), where A₀ = C(t_max)×1.10 is the "
              "estimated forest stock at the start of the monitored period."),
-            ("P4 â€” Natural Vegetation by Class (B)",
+            ("P4 — Natural Vegetation by Class (B)",
              "Partition of S(t) by detected land-cover/use class."),
-            ("P5 â€” Annual Secondary Vegetation Extent",
-             "VS(t,s) = Î£ area of SV polygons for year t and state s."),
-            ("P6 â€” Annual Net Increment of SV",
-             "Î”VS(t,s) = VS(t,s) âˆ’ VS(tâˆ’1,s). Positive = net recovery."),
-            ("P7 â€” SV by Age Class (A)",
-             "Partition by age: Young (<5yr), Intermediate (5â€“15yr), Mature (â‰¥15yr)."),
-            ("P8 â€” SV by Land-Use History (B)",
+            ("P5 — Annual Secondary Vegetation Extent",
+             "VS(t,s) = Σ area of SV polygons for year t and state s."),
+            ("P6 — Annual Net Increment of SV",
+             "ΔVS(t,s) = VS(t,s) − VS(t−1,s). Positive = net recovery."),
+            ("P7 — SV by Age Class (A)",
+             "Partition by age: Young (<5yr), Intermediate (5–15yr), Mature (≥15yr)."),
+            ("P8 — SV by Land-Use History (B)",
              "Partition by class/land-use history from the 'classname' attribute."),
-            ("P9 â€” Municipality Ã— State Matrix",
+            ("P9 — Municipality × State Matrix",
              "All parameters at municipal scale, aggregated to state level. "
              "Includes % of state total and % of national total."),
             ("Data",
@@ -1173,7 +1232,10 @@ def chart_suppression_trend(p1_national: list[tuple], lang: str) -> Path:
         return None
 
     cmap   = plt.get_cmap(_CMAP_UNI, len(years))
-    colors = [cmap(i / max(len(years) - 1, 1)) for i in range(len(years))]
+    colors = [
+        "#E6E6E6" if year < ANALYSIS_BASE_YEAR else cmap(i / max(len(years) - 1, 1))
+        for i, year in enumerate(years)
+    ]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     bars = ax.bar(years, km2, color=colors, width=0.75, zorder=3, linewidth=0)
@@ -1185,13 +1247,19 @@ def chart_suppression_trend(p1_national: list[tuple], lang: str) -> Path:
                  loc="left", pad=10)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
 
-    # Annotate peak and most recent
-    if km2:
-        peak_i = km2.index(max(km2))
+    # Annotate analytical peak only; pre-2008 values are context.
+    analytical = [(i, v) for i, (year, v) in enumerate(zip(years, km2)) if year >= ANALYSIS_BASE_YEAR]
+    if analytical:
+        peak_i, _ = max(analytical, key=lambda item: item[1])
         ax.annotate(f"{km2[peak_i]:,.0f}",
                     xy=(years[peak_i], km2[peak_i]),
                     xytext=(0, 6), textcoords="offset points",
                     ha="center", fontsize=8, color="#C0392B", fontweight="bold")
+
+    if any(year < ANALYSIS_BASE_YEAR for year in years):
+        label = "Contexto pré-2008" if lang == "pt" else "Pre-2008 context"
+        ax.text(0.01, 0.96, label, transform=ax.transAxes,
+                fontsize=7, color="#999999", style="italic")
 
     ax.text(0.01, -0.12, _t("src_prodes", lang),
             transform=ax.transAxes, fontsize=7, color="#888888", style="italic")
@@ -1234,7 +1302,7 @@ def chart_cumulative_suppression(p2_national: list[tuple], lang: str) -> Path:
 
 
 def chart_sv_dynamics(p5_national: list[tuple], lang: str) -> Path:
-    """Secondary vegetation extent â€” bar chart with cividis color scale."""
+    """Secondary vegetation extent — bar chart with cividis color scale."""
     _pub_style()
     years = [int(r[0]) for r in p5_national if len(r) == 2]
     km2   = [float(r[1]) for r in p5_national if len(r) == 2]
@@ -1261,7 +1329,7 @@ def chart_sv_dynamics(p5_national: list[tuple], lang: str) -> Path:
 
 
 def chart_sv_increment(p6_national: list[tuple], lang: str) -> Path:
-    """Net SV increment â€” diverging bar chart (green=positive, red=negative)."""
+    """Net SV increment — diverging bar chart (green=positive, red=negative)."""
     _pub_style()
     years = [int(r[0]) for r in p6_national if len(r) >= 3]
     inc   = [float(r[-1]) for r in p6_national if len(r) >= 3]
@@ -1287,7 +1355,7 @@ def chart_sv_increment(p6_national: list[tuple], lang: str) -> Path:
 
 
 def chart_state_ranking(p1_rows: list[tuple], lang: str, top_n: int = 15) -> Path:
-    """Horizontal bar â€” top states by cumulative suppression (most recent year)."""
+    """Horizontal bar — top states by cumulative suppression (most recent year)."""
     _pub_style()
     # Filter for rows with state column (ncols==3: year, state, km2)
     state_rows = [r for r in p1_rows if len(r) == 3]
@@ -1311,7 +1379,7 @@ def chart_state_ranking(p1_rows: list[tuple], lang: str, top_n: int = 15) -> Pat
     _clean_ax(ax)
     ax.spines["left"].set_visible(False)
     ax.set_xlabel(_t("ax_km2", lang), labelpad=8)
-    ax.set_title(f"{_t('title_suppression', lang)} â€” {max_year}",
+    ax.set_title(f"{_t('title_suppression', lang)} — {max_year}",
                  fontsize=11, fontweight="bold", loc="left", pad=10)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
 
@@ -1326,7 +1394,7 @@ def chart_state_ranking(p1_rows: list[tuple], lang: str, top_n: int = 15) -> Pat
 
 
 def chart_sv_subclass(p7_rows: list[tuple], lang: str) -> Path:
-    """Stacked bar â€” SV by age class over time (viridis)."""
+    """Stacked bar — SV by age class over time (viridis)."""
     _pub_style()
     if not p7_rows:
         return None
@@ -1426,7 +1494,7 @@ def _slide_cover(prs: Presentation, lang: str) -> None:
     _pptx_rect(sl, 0, _PPT_H - 0.07, _PPT_W, 0.07, pri)
     _pptx_tb(sl, _t("pptx_lang_label", lang), 0.35, 0.12, 2, 0.28,
              size=7, bold=True, color=pri)
-    _pptx_tb(sl, "PRODES Â· Imazon", 0.35, 0.45, 8.5, 0.5,
+    _pptx_tb(sl, "PRODES · Imazon", 0.35, 0.45, 8.5, 0.5,
              size=22, bold=True, color=_C_NAVY)
     _pptx_tb(sl, _t("pptx_subtitle", lang), 0.35, 1.05, 7.8, 1.4,
              size=13, color=_C_MED)
@@ -1526,7 +1594,7 @@ def build_pptx(lang: str, chart_paths: dict[str, Path | None],
             prs, lang,
             chart_paths.get(f"{key}_{lang}"),
             _t(title_key, lang),
-            f"INPE/PRODES Â· Imazon  Â·  {datetime.now().year}",
+            f"INPE/PRODES · Imazon  ·  {datetime.now().year}",
             _t(src_key, lang),
         )
 
@@ -1557,7 +1625,7 @@ def main() -> None:
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     CHART_DIR.mkdir(parents=True, exist_ok=True)
 
-    # â”€â”€ 1. Discover files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 1. Discover files ─────────────────────────────────────────────────
     print("  [1/5] Discovering data files...")
     discover_timer = StageTimer("06_discover_inputs")
     supp_by_biome = _discover_suppression(gpq_dir)
@@ -1601,7 +1669,7 @@ def main() -> None:
     if not all_supp:
         sys.exit("[FATAL] No suppression parquet files found. Run scripts 02 and 05 first.")
 
-    # â”€â”€ 2. Schema probing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 2. Schema probing ─────────────────────────────────────────────────
     print("\n  [2/5] Probing schemas...")
     sm_supp = _schema(all_supp or amazon_files)
     sm_vs   = _schema(vs_files) if vs_files else None
@@ -1609,21 +1677,30 @@ def main() -> None:
     if not sm_supp:
         sys.exit("[FATAL] Could not detect area column in suppression parquets.")
 
-    print(f"     Suppression â€” area: {sm_supp.area}  year: {sm_supp.year}  "
+    print(f"     Suppression — area: {sm_supp.area}  year: {sm_supp.year}  "
           f"state: {sm_supp.state}  muni: {sm_supp.muni}  "
           f"class: {sm_supp.cls}  factor: {sm_supp.factor:.2e}")
     if sm_vs:
-        print(f"     Secondary veg  â€” area: {sm_vs.area}  year: {sm_vs.year}  "
+        print(f"     Secondary veg  — area: {sm_vs.area}  year: {sm_vs.year}  "
               f"class: {sm_vs.cls}  age: {sm_vs.age}")
 
-    # â”€â”€ 3. Compute parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 3. Compute parameters ─────────────────────────────────────────────
     print("\n  [3/5] Computing parameters P1-P9 via DuckDB...")
     compute_timer = StageTimer("06_compute_parameters_p1_p9")
 
     p1 = p1_suppression_series(all_supp, sm_supp)
-    print(f"     P1 rows: {len(p1)}")
+    p1_analysis = _rows_from_year(p1)
+    if not p1_analysis:
+        sys.exit(
+            f"[FATAL] No PRODES suppression rows found from analytical base year "
+            f"{ANALYSIS_BASE_YEAR} onward."
+        )
+    print(
+        f"     P1 rows: {len(p1)} "
+        f"({len(p1_analysis)} analytical from {ANALYSIS_BASE_YEAR})"
+    )
 
-    p2 = p2_cumulative(p1)
+    p2 = p2_cumulative(p1_analysis)
     print(f"     P2 rows: {len(p2)}")
 
     p3 = p3_nv_remaining(p2)
@@ -1649,6 +1726,7 @@ def main() -> None:
     print(f"     P9 rows: {len(p9)}")
     row_counts = {
         "p1": len(p1),
+        "p1_analysis": len(p1_analysis),
         "p2": len(p2),
         "p3": len(p3),
         "p4": len(p4),
@@ -1670,7 +1748,7 @@ def main() -> None:
         ),
     )
 
-    # â”€â”€ 4. Generate charts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 4. Generate charts ────────────────────────────────────────────────
     print("\n  [4/5] Generating publication-quality charts...")
 
     # P1 national aggregate (year, km2 only)
@@ -1703,11 +1781,11 @@ def main() -> None:
         chart_paths[f"cumulative_suppression_{lang}"] = chart_cumulative_suppression(p2, lang)
         chart_paths[f"sv_dynamics_{lang}"]            = chart_sv_dynamics(p5_nat, lang) if p5_nat else None
         chart_paths[f"sv_increment_{lang}"]           = chart_sv_increment(p6_nat, lang) if p6_nat else None
-        chart_paths[f"state_ranking_{lang}"]          = chart_state_ranking(p1, lang) if sm_supp.state else None
+        chart_paths[f"state_ranking_{lang}"]          = chart_state_ranking(p1_analysis, lang) if sm_supp.state else None
         chart_paths[f"sv_subclass_{lang}"]            = chart_sv_subclass(p7_lang, lang) if p7_lang else None
         print(f"     [{lang.upper()}] charts generated")
 
-    # â”€â”€ 5. Export workbooks + PPTX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 5. Export workbooks + PPTX ────────────────────────────────────────
     print("\n  [5/5] Writing Excel workbooks and PowerPoint presentations...")
     date_str = datetime.now().strftime("%Y-%m-%d")
     output_artifacts: list[Path] = []
@@ -1757,6 +1835,17 @@ def main() -> None:
                 "secondary_vegetation_files": len(vs_files),
             },
             "row_counts": row_counts,
+            "analysis_policy": {
+                "base_year": ANALYSIS_BASE_YEAR,
+                "raw_context_year_min": DATA_YEAR_MIN,
+                "raw_context_year_max": DATA_YEAR_MAX,
+                "description": (
+                    "PRODES statistics, cumulative metrics, rankings, conclusions, "
+                    "and analytical PPTX content are computed from the 2008 base "
+                    "year onward. Earlier years are retained only as illustrative "
+                    "context in P1 trend tables/charts."
+                ),
+            },
             "output_contract": to_jsonable(ANALYTICS_EXPORT_CONTRACT),
             "artifacts": artifacts,
             "lineage": LineageRecord(

@@ -23,11 +23,12 @@ or folder.
 ### One-command Windows PowerShell setup and run
 
 Open PowerShell and paste this command. It installs Git/Python with `winget` if
-needed, clones or updates the repository, prepares the Python environment, and
-runs the pipeline from step 1:
+needed, replaces the local repository with a fresh copy from GitHub, preserves
+the existing `workspace/` folder so downloaded ZIPs are not deleted, prepares
+the Python environment, and runs the pipeline from step 1:
 
 ```powershell
-$ErrorActionPreference="Stop"; $repoUrl="https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git"; $repo=Join-Path $HOME "terrabrasilis-inpe-downloader"; if (-not (Get-Command git -ErrorAction SilentlyContinue)) { winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements }; if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command py -ErrorAction SilentlyContinue)) { winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements }; $env:Path=[Environment]::GetEnvironmentVariable("Path","Machine")+";"+[Environment]::GetEnvironmentVariable("Path","User")+";C:\Program Files\Git\cmd"; if (-not (Test-Path $repo)) { git clone $repoUrl $repo }; Set-Location $repo; git pull origin main; if (Test-Path .\setup_env.py) { if (Get-Command py -ErrorAction SilentlyContinue) { py -3 setup_env.py } else { python setup_env.py } }; if (Test-Path .\.venv\Scripts\python.exe) { .\.venv\Scripts\python.exe run_pipeline.py --from 1 } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 run_pipeline.py --from 1 } else { python run_pipeline.py --from 1 }
+$ErrorActionPreference="Stop"; $repoUrl="https://github.com/abrandaojr/terrabrasilis-inpe-downloader.git"; $repo=Join-Path $HOME "terrabrasilis-inpe-downloader"; $workspace=Join-Path $repo "workspace"; $backup=Join-Path $HOME "terrabrasilis_workspace_backup"; if (-not (Get-Command git -ErrorAction SilentlyContinue)) { winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements }; if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command py -ErrorAction SilentlyContinue)) { winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements }; $env:Path=[Environment]::GetEnvironmentVariable("Path","Machine")+";"+[Environment]::GetEnvironmentVariable("Path","User")+";C:\Program Files\Git\cmd"; if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }; if (Test-Path $workspace) { Move-Item -LiteralPath $workspace -Destination $backup }; if (Test-Path $repo) { Remove-Item -LiteralPath $repo -Recurse -Force }; git clone $repoUrl $repo; if (Test-Path $backup) { Move-Item -LiteralPath $backup -Destination $workspace }; Set-Location $repo; if (Test-Path .\setup_env.py) { if (Get-Command py -ErrorAction SilentlyContinue) { py -3 setup_env.py } else { python setup_env.py } }; if (Test-Path .\.venv\Scripts\python.exe) { .\.venv\Scripts\python.exe run_pipeline.py --from 1 } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 run_pipeline.py --from 1 } else { python run_pipeline.py --from 1 }
 ```
 
 Manual setup:
@@ -105,7 +106,6 @@ repository/
     zip/
     geoparquet/
     tables/
-      charts/
     figures/
     presentations/
     reports/
@@ -185,7 +185,9 @@ Key output:
 
 ### 05 Organize GeoParquet
 
-Builds a cleaner cataloged GeoParquet folder structure.
+Builds a cleaner cataloged GeoParquet folder structure. This step is
+idempotent: it can organize raw conversion outputs or refresh the catalog when
+files already live under `_organized/`.
 
 Key output:
 
@@ -193,13 +195,21 @@ Key output:
 
 ### 06 Export Tables
 
-Exports analytical tables and charts.
+Exports analytical tables and charts. PRODES statistics, cumulative metrics,
+rankings, conclusions, and analytical presentation text use 2008 as the
+analytical base year. Years before 2008 may appear only as illustrative context
+in trend charts and P1 series tables.
+
+Secondary vegetation layers are detected from names such as `VS_`,
+`vegetacao_secundaria`, `floresta_secundaria`, and English variants. They feed
+the VS/secondary-vegetation outputs and are excluded from PRODES deforestation
+statistics.
 
 Key outputs:
 
 - `workspace/tables/PRODES_Analytics_*.xlsx`
 - `workspace/tables/PRODES_Analytics_*.pptx`
-- `workspace/tables/charts/*.png`
+- `workspace/figures/*.png`
 
 ### 07 Visual Story Deliverables
 
@@ -250,7 +260,8 @@ Each stage writes JSON quality reports to `workspace/reports/`, including:
 Run a syntax check before publishing changes:
 
 ```bash
-python -m py_compile run_pipeline.py setup_env.py scripts/*.py prodes_pipeline/*.py
+python -m compileall -q run_pipeline.py setup_env.py scripts prodes_pipeline tests
+python -m unittest discover -s tests
 ```
 
 ## Releases and Packages

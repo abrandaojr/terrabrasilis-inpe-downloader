@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Ensure `vector-to-geoparquet` is upgraded to at least `1.4.1` before
+  conversion, preventing stale `proj.db` path conflicts between pyproj and
+  GDAL/pyogrio/rasterio.
+
 ## 1.2.0 - 2026-06-11
 
 - Reorganized the GitHub repository into `scripts/`, `prodes_pipeline/`, and `docs/`.

@@ -4,6 +4,7 @@ __version__ = "2.0.0"
 __all__: list[str] = []
 
 import importlib.util
+import importlib.metadata
 import json
 import logging
 import os
@@ -26,6 +27,9 @@ from typing import NamedTuple
 
 logging.basicConfig(format="%(levelname)-8s %(message)s", level=logging.WARNING)
 log = logging.getLogger(__name__)
+
+VECTOR_TO_GEOPARQUET_SPEC = "git+https://github.com/abrandaojr/vector-to-geoparquet.git"
+MIN_VECTOR_TO_GEOPARQUET_VERSION = "1.4.1"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +88,49 @@ def _bootstrap(*packages: tuple[str, str]) -> None:
         sys.exit(f"[FATAL] Could not install: {' '.join(missing)}")
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in version.split("."):
+        number = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            number += char
+        if number:
+            parts.append(int(number))
+    return tuple(parts)
+
+
+def _ensure_vector_to_geoparquet_version() -> None:
+    """Upgrade vector-to-geoparquet when an older installed copy is present."""
+    try:
+        current_version = importlib.metadata.version("vector-to-geoparquet")
+    except importlib.metadata.PackageNotFoundError:
+        current_version = "0"
+
+    if _version_tuple(current_version) >= _version_tuple(MIN_VECTOR_TO_GEOPARQUET_VERSION):
+        return
+
+    log.warning(
+        "Updating vector-to-geoparquet from %s to >= %s to avoid PROJ database conflicts.",
+        current_version,
+        MIN_VECTOR_TO_GEOPARQUET_VERSION,
+    )
+    strategies = [
+        [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade"],
+        ["uv", "pip", "install", "--python", sys.executable, "--quiet", "--upgrade"],
+        [sys.executable, "-m", "uv", "pip", "install", "--python", sys.executable, "--quiet", "--upgrade"],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--break-system-packages"],
+    ]
+    for base in strategies:
+        try:
+            subprocess.check_call(base + [VECTOR_TO_GEOPARQUET_SPEC], stderr=subprocess.DEVNULL)
+            return
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    sys.exit("[FATAL] Could not update vector-to-geoparquet")
+
+
 def _proj_db_layout_minor(proj_db: Path) -> int | None:
     """Read the PROJ database minor layout version without importing PROJ."""
     try:
@@ -122,7 +169,7 @@ def _configure_proj_data() -> None:
 
 
 _bootstrap(
-    ("git+https://github.com/abrandaojr/vector-to-geoparquet.git", "vector_to_geoparquet"),
+    (VECTOR_TO_GEOPARQUET_SPEC, "vector_to_geoparquet"),
     ("geopandas", "geopandas"),
     ("pyogrio", "pyogrio"),
     ("pyarrow", "pyarrow"),
@@ -131,6 +178,7 @@ _bootstrap(
     ("tqdm", "tqdm"),
     ("rasterio", "rasterio"),
 )
+_ensure_vector_to_geoparquet_version()
 _configure_proj_data()
 
 # Import heavy packages at module level so the one-time cold-start
